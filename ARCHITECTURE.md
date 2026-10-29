@@ -1,7 +1,8 @@
 # Lyrica 架构文档
 
 > 轻量级本地音乐播放器 · Python + PySide6 + just_playback
-> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → **v1.0.3**
+> 
+> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → **v1.0.4**
 
 ---
 
@@ -137,7 +138,7 @@ Step 3: need_read 的 → ThreadPoolExecutor(max_workers=8) 并行读
 
 ```json
 {
-  "version": "1.0.3",
+  "version": "1.0.4",
   "play_mode": "LIST_LOOP",
   "volume": 0.7,
   "window_size": {"w": 800, "h": 500},
@@ -218,13 +219,24 @@ QApplication 启动
 - **filename 排序跳过 TinyTag**：直接用 basename.lower()，零 IO
 - **ScanWorker 预取 metadata**：扫描时顺便读 TinyTag，摊进等待时间里
 
-### v1.0.3（当前）
+### v1.0.3
 > ScanWorker 增量并行 + meta_cache 持久化 + 强制退出
 - **ScanWorker 增量模式**：传入已有 `_meta_cache` → 跳过已缓存文件
 - **ThreadPoolExecutor 并行**：need_read 的文件 8 线程 TinyTag.get()，IO 密集并行加速
 - **meta_cache 持久化到 JSON**：重启后排序直接命中热缓存
 - **强制退出**：标题右键菜单「退出」+ Ctrl+Q，绕过最小化到托盘开关
 - 托盘通知缩短为 800ms
+
+### v1.0.4（当前）
+> 视图跳转修复 + 列表视觉收敛
+- **组上移/下移不再跳转视图**：`_swap_groups` 末尾移除 `track_changed.emit` —— 组移动是结构性变更，不是切歌，不应触发"高亮播放组/播放曲目"的切歌语义 UI 动作
+- **曲目排序同理**：`sort_group_tracks` 末尾移除 `track_changed.emit`
+- **`_refresh_tracks_list` 补回高亮**：列表重建后，若正在播放的曲目属于当前显示组，恢复 `currentRow`（此前只有切歌才会恢复）
+- **高亮条件收紧**：仅当 `is_playing() or is_paused()` 成立时才恢复高亮，避免"仅添加文件、从未播放"时误高亮第 0 行
+- **QSS 选中项改圆角蓝底**：`QListWidget::item:selected` 从淡粉实心改为 `#89b4fa` 实心 + 深色字，左右圆角框
+- **列表紧凑化**：item `padding` 4→2、垂直 `margin` 归零，同高度可视行数 +4~6
+- **滑块手柄改白**：`QSlider::handle:horizontal` 从 `#f5c2e7` 改为 `#ffffff`（进度条与音量条共用）
+- **播放组文字贴左**：移除 `_refresh_groups_list` 里的两个前导空格，QSS 左侧 padding 6→3
 
 ---
 
@@ -251,6 +263,7 @@ QApplication 启动
 | Model/View 架构 | QListWidget（Widget 模式） | 曲目超 5000 首时建议换成 QAbstractListModel |
 | meta_cache TTL | 无 | 文件被重新打标签后缓存过期，需加 mtime 校验 |
 | 全局快捷键 | 未做 | 空格播放暂停、←/→ 快进，30 行代码 |
+| `reset_group_order` 索引未重映射 | 重排后 `_current_index` 仍指向旧位置 | 照抄 `_swap_groups` 的 `playing_path → index()` 恢复逻辑 |
 
 ---
 
@@ -279,7 +292,7 @@ spec 关键配置：
 
 ```bash
 pip install -r requirements-dev.txt
-QT_QPA_PLATFORM=offscreen python -m pytest            # 173 个用例
+QT_QPA_PLATFORM=offscreen python -m pytest            # 176 个用例
 QT_QPA_PLATFORM=offscreen python -m pytest --cov=src --cov=main   # 覆盖率 ~99%
 ```
 
@@ -290,3 +303,12 @@ QT_QPA_PLATFORM=offscreen python -m pytest --cov=src --cov=main   # 覆盖率 ~9
   保证无显示器环境下 UI 测试稳定
 - 配置文件路径通过 monkeypatch `main_window.settings_path` 指向 `tmp_path`，不污染项目目录
 - 右键菜单用 `MenuRecorder` 代填 `QMenu`，直接触发 QAction 而不真正弹窗阻塞
+
+## 十一、设计决策记录
+
+- **频谱图暂不做**：`just_playback` 不暴露 PCM；方案 A（状态驱动伪频谱）天花板是"看起来像"，
+  方案 B 需 numpy + 文件 I/O + MP3 解码环境风险，方案 C 需侵入 miniaudio 回调、破坏
+  `FakePlayback` 测试契约。收益撑不起代价。
+- **暂不换播放引擎**：`QMediaPlayer` 依赖系统后端、延迟不可控、PCM 黑盒、打包需处理插件生态；
+  `pyminiaudio` 可原生拦截 PCM 但需重写 `MusicPlayer` 内部状态机。若未来做 EQ/DSP/可视化，
+  选 `pyminiaudio` 而非 fork `just_playback`。

@@ -7,12 +7,12 @@ Lyrica v1.0 - 主窗口 UI
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Slot, QThread, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QSlider, QSplitter, QSystemTrayIcon,
     QVBoxLayout, QWidget,
@@ -22,7 +22,7 @@ from .player import PlayMode, MusicPlayer
 
 
 APP_NAME = "Lyrica"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 SETTINGS_FILENAME = "lyrica_settings.json"
 
 
@@ -656,7 +656,7 @@ class MainWindow(QMainWindow):
     def _refresh_groups_list(self):
         # v1.0.2 优化1: 冻结 repaint + 批量 addItems，避免 N 次 layout
         self.groups_list.blockSignals(True); self.groups_list.setUpdatesEnabled(False); self.groups_list.clear()
-        names = [f"  {self.player.get_group_name(i)}" for i in range(self.player.get_group_count())]
+        names = [self.player.get_group_name(i) for i in range(self.player.get_group_count())]
         self.groups_list.addItems(names)
         cur = self.player.get_active_group_index()
         if 0 <= cur < self.groups_list.count(): self.groups_list.setCurrentRow(cur)
@@ -665,16 +665,26 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _refresh_tracks_list(self):
-        # v1.0.2 优化1: 同上
         gi = self.player.get_active_group_index()
-        self.tracks_list.blockSignals(True); self.tracks_list.setUpdatesEnabled(False); self.tracks_list.clear()
+        self.tracks_list.blockSignals(True)
+        self.tracks_list.setUpdatesEnabled(False)
+        self.tracks_list.clear()
         if 0 <= gi:
             tracks = self.player.get_group_tracks(gi)
             self.tracks_list.addItems([os.path.basename(t) for t in tracks])
             self.lbl_tracks_header.setText(f"🎵 {len(tracks)} 首")
+
+            # 仅在真正有已加载曲目时恢复高亮
+            cur = self.player.get_current_index()
+            has_loaded = self.player.is_playing() or self.player.is_paused()
+            if cur >= 0 and has_loaded and self.player.get_group_of_track(cur) == gi:
+                ti = self.player.get_track_index_in_group(cur)
+                if 0 <= ti < self.tracks_list.count():
+                    self.tracks_list.setCurrentRow(ti)
         else:
             self.lbl_tracks_header.setText("🎵 曲目")
-        self.tracks_list.setUpdatesEnabled(True); self.tracks_list.blockSignals(False)
+        self.tracks_list.setUpdatesEnabled(True)
+        self.tracks_list.blockSignals(False)
 
     @Slot(str)
     def _on_error(self, msg: str): QMessageBox.warning(self, APP_NAME, msg)

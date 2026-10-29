@@ -215,7 +215,7 @@ def test_refresh_groups_and_tracks(window, tmp_path):
     window._refresh_groups_list()
 
     assert window.groups_list.count() == 1
-    assert window.groups_list.item(0).text() == "  album (2)"
+    assert window.groups_list.item(0).text() == "album (2)"
     assert window.tracks_list.count() == 2
     assert window.lbl_tracks_header.text() == "🎵 2 首"
 
@@ -620,6 +620,61 @@ def test_tracks_menu_play_selected(window, tmp_path, monkeypatch):
 
     assert window.player.get_current_index() == 1
 
+# ==================== 视图跳转回归（v1.0.4） ====================
+
+
+def test_move_group_up_does_not_jump_view(window, make_tree):
+    """组上移后视图应停在操作组，而不是跳到正在播放的组。"""
+    base = make_tree({"A": ["a.mp3"], "B": ["b.mp3"], "C": ["c.mp3"]})
+    window.player.add_folder_recursive(str(base))
+    window._refresh_groups_list()
+    # 播放 C 的曲目：current_index 落在 C，但用户接下来要操作的是 B
+    window.player.play_track_in_group(2, 0)
+    # 用户选中 B 组（准备上移它）
+    window.groups_list.setCurrentRow(1)
+    assert window.player.get_active_group_index() == 1
+
+    window.player.move_group_up(1)
+
+    # B 已移到 index 0，active 跟随 B
+    assert window.player.get_active_group_index() == 0
+    # 视图应停在 B（index 0），而非播放中的 C（index 2）
+    assert window.groups_list.currentRow() == 0
+
+
+def test_sort_tracks_does_not_jump_view(window, make_tree):
+    """曲目排序后视图应停在当前组，而不是跳到正在播放的组。"""
+    base = make_tree({"A": ["b.mp3", "a.mp3"], "B": ["b.mp3"]})
+    window.player.add_folder_recursive(str(base))
+    # 手动打乱 A 的曲目顺序：b, a（_scan_folder_flat 默认按文件名排序）
+    a_tracks = list(window.player._groups[0].tracks)
+    window.player._groups[0].tracks = [a_tracks[1], a_tracks[0]]
+    window.player._rebuild_flat_playlist()
+    window._refresh_groups_list()
+    # 播放 B 的曲目：current_index 落在 B
+    window.player.play_track_in_group(1, 0)
+    # 用户选中 A 组（准备排序它）
+    window.groups_list.setCurrentRow(0)
+    assert window.player.get_active_group_index() == 0
+
+    window.player.sort_group_tracks(0, "filename")
+
+    # 排序已生效
+    assert [os.path.basename(p) for p in window.player.get_group_tracks(0)] == ["a.mp3", "b.mp3"]
+    # 视图应停在 A（index 0），而非播放中的 B（index 1）
+    assert window.groups_list.currentRow() == 0
+
+
+def test_refresh_tracks_list_no_highlight_when_not_playing(window, make_tree):
+    """仅添加文件、从未播放时，刷新列表不应高亮任何行。"""
+    base = make_tree({"A": ["a.mp3", "b.mp3"]})
+    window.player.add_folder_recursive(str(base))
+
+    window._refresh_tracks_list()
+
+    # add_folder_recursive 会把 _current_index 初始化为 0，
+    # 但没有任何曲目被加载/播放，不应据此高亮第 0 行
+    assert window.tracks_list.currentRow() == -1
 
 # ==================== 托盘行为 ====================
 

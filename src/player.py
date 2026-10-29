@@ -384,8 +384,6 @@ class MusicPlayer(QObject):
 
         self.groups_changed.emit()
         self.playlist_changed.emit()
-        if self._current_index >= 0:
-            self.track_changed.emit(self._current_index)
 
     # ==================== 播放组移动 / 默认排序（v1.0 新增） ====================
 
@@ -440,8 +438,6 @@ class MusicPlayer(QObject):
         self.playlist_changed.emit()
         if self._active_group_index >= 0:
             self.active_group_changed.emit(self._active_group_index)
-        if self._current_index >= 0:
-            self.track_changed.emit(self._current_index)
 
     def restore_paused_position(self, position: float) -> bool:
         """加载当前曲目但不播放，并 seek 到指定位置。返回是否成功。

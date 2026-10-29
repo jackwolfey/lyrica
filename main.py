@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Lyrica v1.0.3 — 轻量级本地音乐播放器
+Lyrica v1.0.4 — 轻量级本地音乐播放器
 基于 Python + just_playback + PySide6
 """
 
@@ -50,7 +50,7 @@ QSlider::sub-page:horizontal {
     border-radius: 2px;
 }
 QSlider::handle:horizontal {
-    background: #f5c2e7;
+    background: #ffffff;
     width: 12px;
     height: 12px;
     margin: -4px 0;
@@ -95,16 +95,25 @@ QListWidget {
     font-size: 12px;
     outline: 0;
 }
+
 QListWidget::item {
-    padding: 4px 8px;
-    border-radius: 3px;
-}
-QListWidget::item:selected {
-    background-color: #45475a;
-    color: #f5c2e7;
+    padding: 2px 6px 2px 3px;      /* 上 右 下 左：左侧从 6px 收到 3px */
+    margin: 0 2px 0 1px;           /* 左侧 margin 从 2px 收到 1px */
+    border-radius: 5px;
+    border: 1px solid transparent;
 }
 QListWidget::item:hover {
     background-color: #313244;
+    border-color: #45475a;
+}
+QListWidget::item:selected {
+    background-color: #89b4fa;          /* 实心蓝底 */
+    border: 1px solid #89b4fa;
+    color: #1e1e2e;                     /* 蓝底必须换深色字，否则看不清 */
+}
+QListWidget::item:selected:hover {
+    background-color: #a6c8ff;          /* 选中态 hover 稍亮一档 */
+    border-color: #a6c8ff;
 }
 
 /* 右键菜单 */
@@ -145,6 +154,7 @@ QSplitter::handle:hover {
 QSplitter::handle:horizontal {
     width: 2px;
 }
+
 
 /* 播放组 / 曲目面板 */
 QFrame#leftPanel, QFrame#rightPanel {
