@@ -1,4 +1,5 @@
 # 🎵 Lyrica
+[![CI](https://github.com/jackwolfey/lyrica/actions/workflows/ci.yml/badge.svg)](https://github.com/jackwolfey/lyrica/actions/workflows/ci.yml)
 
 > **极简 · 纯本地 · 深色主题**的轻量级本地音乐播放器
 > 专为极客与音乐爱好者打造
