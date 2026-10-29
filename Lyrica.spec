@@ -55,6 +55,13 @@ excludes = [
     "PyInstaller.utils.cliutils",
 ]
 
+# ---------- 图标（Windows 用 .ico，其余平台由系统/desktop 文件处理） ----------
+_icon = None
+if sys.platform.startswith("win"):
+    _ico = os.path.join(os.path.dirname(SPEC), "lyrica.ico")
+    if os.path.exists(_ico):
+        _icon = _ico
+
 # ---------- 构建 ----------
 a = Analysis(
     ["main.py"],
