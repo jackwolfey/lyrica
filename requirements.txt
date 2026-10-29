@@ -1,0 +1,3 @@
+PySide6>=6.5.0
+just_playback>=0.1.8
+tinytag>=1.8.0
