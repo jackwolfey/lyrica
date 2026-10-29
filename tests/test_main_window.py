@@ -196,7 +196,7 @@ def test_initial_state(window):
     assert window._tray is None  # 离屏环境无托盘
     assert window.player.get_group_count() == 0
     assert window.slider_volume.value() == 70
-    assert window._minimize_to_tray is True
+    assert window._minimize_to_tray is False
 
 
 def test_tray_icon_is_generated_programmatically(window):
@@ -445,7 +445,7 @@ def test_save_settings_structure(window, settings_file, tmp_path):
     assert isinstance(data["window_size"]["w"], int)
     assert isinstance(data["window_size"]["h"], int)
     assert isinstance(data["meta_cache"], dict)
-    assert data["minimize_to_tray"] is True
+    assert data["minimize_to_tray"] is False
     assert "current_index" in data
     assert "active_group_index" in data
 
@@ -475,11 +475,11 @@ def test_load_survives_broken_json(settings_file, window_factory):
 
 
 def test_load_minimize_flag(settings_file, window_factory):
-    write_json(settings_file, {"minimize_to_tray": False})
+    write_json(settings_file, {"minimize_to_tray": True})
 
     window = window_factory()
 
-    assert window._minimize_to_tray is False
+    assert window._minimize_to_tray is True
 
 
 def test_load_legacy_playlist_key(settings_file, window_factory, tmp_path):
@@ -538,6 +538,7 @@ def test_close_event_saves_settings(window, settings_file):
 
 
 def test_title_menu_entries_and_tray_toggle(window, monkeypatch):
+    window._minimize_to_tray = True
     menus = install_menu_recorder(monkeypatch)
 
     window._show_title_menu(QPoint(5, 5))
