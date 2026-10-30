@@ -9,7 +9,7 @@ import os
 import sys
 from typing import Any, Dict, Optional
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Slot, QThread, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Slot, QThread, Signal, QTimer
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QPen, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
@@ -44,6 +44,88 @@ class PlayingItemDelegate(QStyledItemDelegate):
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect, 6, 6)
+
+
+# v1.1: 单行超长横向滚动（marquee）标签
+class _MarqueeLabel(QLabel):
+    """默认居中显示；文本宽度超过 label 宽度时，自动从右向左横向滚动。
+    滚动一次后停住，当文本变短/窗口变宽到足以显示完整时自动停止滚动。"""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._offset = 0          # 当前滚动偏移（像素）
+        self._marquee_active = False
+        self._scroll_speed = 1.0   # 每 tick 滚动像素
+        self._scroll_interval = 40  # ms（约 25 fps）
+        self._marquee_timer = QTimer(self)
+        self._marquee_timer.timeout.connect(self._tick_marquee)
+        self.setAlignment(Qt.AlignCenter)
+
+    def setText(self, text):
+        super().setText(text)
+        self._restart_marquee()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._restart_marquee()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._restart_marquee()
+
+    def _restart_marquee(self):
+        self._marquee_timer.stop()
+        self._offset = 0
+        self._marquee_active = False
+        # 超出宽度 → 启用 marquee
+        fm = self.fontMetrics()
+        text_width = fm.horizontalAdvance(self.text())
+        label_width = self.width()
+        if text_width > label_width + 4:  # 留 4px 裕量
+            self._marquee_active = True
+            self._marquee_timer.start(self._scroll_interval)
+        self.update()
+
+    def _tick_marquee(self):
+        fm = self.fontMetrics()
+        text_width = fm.horizontalAdvance(self.text())
+        label_width = self.width()
+        gap = 40  # 滚动一圈后留空多少像素再回来
+
+        # 如果窗口变宽到能完整显示 → 停止
+        if text_width <= label_width + 4:
+            self._marquee_active = False
+            self._marquee_timer.stop()
+            self._offset = 0
+            self.update()
+            return
+
+        max_offset = text_width + gap
+        self._offset += self._scroll_speed
+        if self._offset > max_offset:
+            self._offset = 0
+        self.update()
+
+    def paintEvent(self, event):
+        if not self._marquee_active:
+            super().paintEvent(event)
+            return
+        from PySide6.QtGui import QPainter
+        painter = QPainter(self)
+        painter.setPen(self.palette().windowText().color())
+        fm = painter.fontMetrics()
+        text = self.text()
+        text_w = fm.horizontalAdvance(text)
+        label_w = self.width()
+        gap = 40  # 两段文本间的间隔
+        # 垂直居中：baseline y 坐标
+        v_center = (self.height() + fm.ascent() - fm.descent()) // 2
+
+        # 从居中位置开始，随 offset 向左移动；滚出左边后右边再跟一份
+        cur_x = (label_w - text_w) // 2 - self._offset
+        painter.drawText(int(cur_x), v_center, text)
+        painter.drawText(int(cur_x + text_w + gap), v_center, text)
+        painter.end()
 
 
 APP_NAME = "Lyrica"
@@ -223,25 +305,26 @@ class MainWindow(QMainWindow):
         root.setSpacing(6)
 
         # ---------- 顶部：歌曲信息 + 元数据 ----------
-        self.lbl_title = QLabel("未加载曲目")
+        # 标题栏：单行 + 超长自动横向滚动（marquee）
+        self.lbl_title = _MarqueeLabel("未加载曲目")
         self.lbl_title.setAlignment(Qt.AlignCenter)
         font = self.lbl_title.font()
         font.setPointSize(13)
         font.setBold(True)
         self.lbl_title.setFont(font)
-        self.lbl_title.setWordWrap(True)
         self.lbl_title.setMinimumHeight(24)
+        self.lbl_title.setMaximumHeight(30)  # 强制单行高度
         self.lbl_title.setContextMenuPolicy(Qt.CustomContextMenu)
         self.lbl_title.customContextMenuRequested.connect(self._show_title_menu)
         # v1.1: 左键点击标题栏 → 滚动并高亮当前正在播放的组和曲目
         self.lbl_title.installEventFilter(self)
         root.addWidget(self.lbl_title)
 
-        # v1.0 新增：元数据标签（艺术家 - 专辑）
+        # v1.0 新增，v1.1 改造：元数据标签（两行 —— 曲目名 / 艺术家 · 专辑）
         self.lbl_meta = QLabel("")
         self.lbl_meta.setAlignment(Qt.AlignCenter)
         self.lbl_meta.setStyleSheet("color:#a6adc8;")
-        self.lbl_meta.setMinimumHeight(16)
+        self.lbl_meta.setMinimumHeight(32)  # 两行
         root.addWidget(self.lbl_meta)
 
         # ---------- 进度条 + 时间 ----------
@@ -849,16 +932,25 @@ class MainWindow(QMainWindow):
     def _on_track_changed(self, flat_index: int):
         if 0 <= flat_index < self.player.get_track_count():
             path = self.player.get_playlist()[flat_index]
-            # 标题
+            # 标题（单行 + 超长自动 marquee）
             name = self.player.get_track_name(flat_index)
             self.lbl_title.setText(f"🎵 {name}")
             self.lbl_title.setToolTip(path)
-            # 元数据（v1.0 新增）
+            # 元数据（v1.1 改造为两行：曲目名 / 艺术家 · 专辑）
             meta = self.player.get_track_metadata(path)
+            track_title = meta.get("title") or ""
+            # fallback：用无扩展名的文件名
+            if not track_title:
+                track_title = os.path.splitext(os.path.basename(path))[0]
             parts = []
             if meta.get("artist"): parts.append(meta["artist"])
             if meta.get("album"): parts.append(meta["album"])
-            self.lbl_meta.setText(" · ".join(parts) if parts else "")
+            artist_album = " · ".join(parts)
+            # 第二行用稍微小一点的字？先保持同一 QLabel，用 <br>
+            meta_lines = [track_title]
+            if artist_album:
+                meta_lines.append(artist_album)
+            self.lbl_meta.setText("<br>".join(meta_lines))
 
             # 高亮左侧组
             gi = self.player.get_group_of_track(flat_index)

@@ -256,7 +256,7 @@ def test_on_track_changed_updates_labels_and_highlight(window, tmp_path):
 
     assert "a.mp3" in window.lbl_title.text()
     assert window.lbl_title.toolTip() == paths[0]
-    assert window.lbl_meta.text() == "Alice · Demo"
+    assert window.lbl_meta.text() == "Song A<br>Alice · Demo"
     assert window.groups_list.currentRow() == 0
     assert window.tracks_list.currentRow() == 0
 
