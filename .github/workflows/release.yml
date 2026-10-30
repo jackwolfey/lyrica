@@ -44,9 +44,10 @@ jobs:
             os_label: macOS arm64
             artifact: Lyrica-macOS-arm64.zip
 
-          # Linux x86_64 (ubuntu-20.04 = glibc 2.31, 兼容绝大多数 Linux 桌面)
-          # 用 ubuntu-20.04 而非 latest(24.04) 是为了产物兼容老系统
-          - os: ubuntu-20.04
+          # Linux x86_64 (ubuntu-22.04 = glibc 2.35, 兼容 Ubuntu 22.04+ / Debian 12+)
+          # 注：ubuntu-20.04 runner 已于 2025 年下线，无法再作为构建环境
+          # 用 22.04 而非 latest(24.04) 是为了让产物尽量兼容较老的发行版
+          - os: ubuntu-22.04
             os_label: Linux x86_64
             artifact: Lyrica-Linux-x86_64.tar.gz
 

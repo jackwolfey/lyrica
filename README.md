@@ -28,7 +28,7 @@
 
 - Windows：`Lyrica-Windows-x64.exe`
 - macOS（Apple Silicon）：`Lyrica-macOS-arm64.zip`
-- Linux（x86_64）：`Lyrica-Linux-x86_64.tar.gz`
+- Linux（x86_64）：`Lyrica-Linux-x86_64.tar.gz`（要求 glibc ≥ 2.35，即 Ubuntu 22.04+ / Debian 12+）
 
 > 所有产物均未做代码签名：macOS 首次打开若被 Gatekeeper 拦截，右键 →「打开」即可。
 
