@@ -29,7 +29,7 @@ def test_get_track_metadata_reads_and_caches(player, monkeypatch):
     second = player.get_track_metadata("/music/a.mp3")
 
     assert first == {"title": "Song", "artist": "Alice", "album": "Demo", "duration": "240.5"}
-    assert second is first
+    assert second == first  # 内容相等；现在返回的是新 dict，所以用 == 而不是 is
     assert calls == ["/music/a.mp3"]  # 第二次命中缓存，不再 IO
 
 

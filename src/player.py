@@ -10,17 +10,36 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from tinytag import TinyTag
-from just_playback import Playback
+from just_playback import Playback, SUPPORTED_AUDIO_FORMATS
 
 
-# 支持的音频文件扩展名
-SUPPORTED_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".opus"}
+# 支持的音频文件扩展名 —— 唯一来源是 just_playback（要求 == 1.0.0）
+# 注意：SUPPORTED_AUDIO_FORMATS 报的是"格式名"（如 "ogg-vorbis"），不是扩展名，
+# 所以这里做一层格式名 → 扩展名的映射，扫描与播放前过滤都以它为准。
+_FORMAT_EXTENSIONS = {
+    "wav": (".wav",),
+    "mp3": (".mp3",),
+    "flac": (".flac",),
+    "ogg-vorbis": (".ogg",),
+    "ogg-opus": (".opus",),
+}
+SUPPORTED_EXTENSIONS = {
+    ext
+    for fmt, exts in _FORMAT_EXTENSIONS.items()
+    if fmt in SUPPORTED_AUDIO_FORMATS
+    for ext in exts
+}
 
 
 class PlayMode(Enum):
-    SEQUENCE = "顺序播放"
+    # 组内范围（v1.1：语义修正，原先是全曲库范围）
+    SEQUENCE = "组内顺序"
+    LIST_LOOP = "组内循环"
+    # 跨全曲库范围（v1.1 新增，对应原 SEQUENCE/LIST_LOOP 的实际行为）
+    CROSS_SEQUENCE = "跨组顺序"
+    CROSS_LIST_LOOP = "跨组循环"
+    # 单曲循环：永远只在当前曲目，无范围概念
     SINGLE_LOOP = "单曲循环"
-    LIST_LOOP = "列表循环"
 
 
 @dataclass
@@ -156,6 +175,24 @@ class MusicPlayer(QObject):
 
     def get_active_group_index(self) -> int:
         return self._active_group_index
+
+    def _is_cross_mode(self) -> bool:
+        """当前播放模式是否跨全曲库（vs 仅限 active group 内）"""
+        return self._play_mode in (PlayMode.CROSS_SEQUENCE, PlayMode.CROSS_LIST_LOOP)
+
+    def _get_play_range(self) -> tuple:
+        """返回当前播放范围在 flat playlist 中的 [start, end) 左闭右开。
+        跨组模式 → (0, len(_playlist))
+        组内模式 → active group 在 flat list 中的区间"""
+        if self._is_cross_mode():
+            return 0, len(self._playlist)
+        if not self._groups or self._active_group_index < 0:
+            return 0, len(self._playlist)
+        start = 0
+        for i in range(self._active_group_index):
+            start += len(self._groups[i].tracks)
+        end = start + len(self._groups[self._active_group_index].tracks)
+        return start, end
 
     def get_group_count(self) -> int:
         return len(self._groups)
@@ -309,12 +346,26 @@ class MusicPlayer(QObject):
         if 0 <= self._active_group_index < len(self._groups):
             self.play_track_in_group(self._active_group_index, 0)
 
-    # ==================== 元数据查询（v1.0 新增） ====================
+    # ==================== 元数据查询（v1.0 新增，v1.1 加 mtime TTL） ====================
 
     def get_track_metadata(self, file_path: str) -> Dict[str, Optional[str]]:
-        """获取音频文件元数据（带缓存）。返回 {title, artist, album, duration}"""
-        if file_path in self._meta_cache:
-            return self._meta_cache[file_path]
+        """获取音频文件元数据（带缓存 + 文件 mtime 校验）。
+        若缓存有 _mtime 且当前文件 mtime 不匹配，说明标签被重新打过，自动重读。
+        若缓存无 _mtime（向后兼容旧版本），直接信任缓存。"""
+        cached = self._meta_cache.get(file_path)
+        if cached is not None:
+            cached_mtime = cached.get("_mtime")
+            # 没有 _mtime → 旧缓存条目，直接信任（不触发重读）
+            if cached_mtime is None:
+                return {k: v for k, v in cached.items() if not k.startswith("_")}
+            # 有 _mtime → 校验是否匹配
+            try:
+                current_mtime = os.path.getmtime(file_path)
+                if abs(current_mtime - cached_mtime) < 1.0:
+                    return {k: v for k, v in cached.items() if not k.startswith("_")}
+            except OSError:
+                pass
+            # mtime 不匹配或无法获取 → 重读
 
         result: Dict[str, Optional[str]] = {
             "title": None, "artist": None, "album": None, "duration": None,
@@ -329,15 +380,26 @@ class MusicPlayer(QObject):
         except Exception:
             pass
 
+        # 缓存 + 记录当前 mtime（用于下次 TTL 校验）
+        try:
+            result["_mtime"] = os.path.getmtime(file_path)
+        except OSError:
+            pass
         self._meta_cache[file_path] = result
-        return result
+        return {k: v for k, v in result.items() if not k.startswith("_")}
 
     def preload_metadata(self, meta_cache: Dict[str, Dict[str, Optional[str]]]):
-        """v1.0.2 优化2: 批量预填 metadata 缓存（由 ScanWorker 后台扫描完成）"""
-        # 只填本 player 还没有的，不覆盖已有
+        """批量预填 metadata 缓存（由 ScanWorker 后台扫描完成）。
+        对缺失 _mtime 的旧缓存条目自动补 mtime，保证 TTL 校验链路完整。"""
         for path, meta in meta_cache.items():
             if path not in self._meta_cache:
-                self._meta_cache[path] = meta
+                entry = dict(meta)  # 拷贝，避免修改调用方 dict
+                if "_mtime" not in entry:
+                    try:
+                        entry["_mtime"] = os.path.getmtime(path)
+                    except OSError:
+                        pass
+                self._meta_cache[path] = entry
 
     def get_current_track_metadata(self) -> Dict[str, Optional[str]]:
         if 0 <= self._current_index < len(self._playlist):
@@ -607,15 +669,18 @@ class MusicPlayer(QObject):
     def next_track(self):
         if not self._playlist:
             return
+        start, end = self._get_play_range()
+        if start >= end:
+            return
         if self._current_index < 0:
-            self._current_index = 0
+            self._current_index = start
         else:
             self._current_index += 1
-            if self._current_index >= len(self._playlist):
-                if self._play_mode == PlayMode.LIST_LOOP:
-                    self._current_index = 0
+            if self._current_index >= end:
+                if self._play_mode in (PlayMode.LIST_LOOP, PlayMode.CROSS_LIST_LOOP):
+                    self._current_index = start
                 else:
-                    self._current_index = len(self._playlist) - 1
+                    self._current_index = end - 1
                     self.stop()
                     return
         self.track_changed.emit(self._current_index)
@@ -624,15 +689,18 @@ class MusicPlayer(QObject):
     def prev_track(self):
         if not self._playlist:
             return
+        start, end = self._get_play_range()
+        if start >= end:
+            return
         if self._current_index < 0:
-            self._current_index = 0
+            self._current_index = end - 1
         else:
             self._current_index -= 1
-            if self._current_index < 0:
-                if self._play_mode == PlayMode.LIST_LOOP:
-                    self._current_index = len(self._playlist) - 1
+            if self._current_index < start:
+                if self._play_mode in (PlayMode.LIST_LOOP, PlayMode.CROSS_LIST_LOOP):
+                    self._current_index = end - 1
                 else:
-                    self._current_index = 0
+                    self._current_index = start
         self.track_changed.emit(self._current_index)
         self.play()
 
@@ -705,10 +773,11 @@ class MusicPlayer(QObject):
                 QTimer.singleShot(200, self._handle_track_finished)
 
     def _handle_track_finished(self):
-        if self._play_mode == PlayMode.LIST_LOOP:
+        start, end = self._get_play_range()
+        if self._play_mode in (PlayMode.LIST_LOOP, PlayMode.CROSS_LIST_LOOP):
             self.next_track()
-        elif self._play_mode == PlayMode.SEQUENCE:
-            if self._current_index >= 0 and self._current_index < len(self._playlist) - 1:
+        elif self._play_mode in (PlayMode.SEQUENCE, PlayMode.CROSS_SEQUENCE):
+            if start <= self._current_index < end - 1:
                 self.next_track()
             else:
                 self.stop()

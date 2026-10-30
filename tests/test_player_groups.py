@@ -572,6 +572,8 @@ def test_playlist_group_to_dict():
 
 
 def test_play_mode_values():
-    assert PlayMode.SEQUENCE.value == "顺序播放"
+    assert PlayMode.SEQUENCE.value == "组内顺序"
+    assert PlayMode.LIST_LOOP.value == "组内循环"
     assert PlayMode.SINGLE_LOOP.value == "单曲循环"
-    assert PlayMode.LIST_LOOP.value == "列表循环"
+    assert PlayMode.CROSS_SEQUENCE.value == "跨组顺序"
+    assert PlayMode.CROSS_LIST_LOOP.value == "跨组循环"

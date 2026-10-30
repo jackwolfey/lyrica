@@ -216,12 +216,14 @@ def test_prev_track_at_start_list_loop_wraps(loaded):
     assert loaded.get_current_index() == loaded.get_track_count() - 1
 
 
-def test_prev_track_from_invalid_index_starts_at_zero(loaded):
+def test_prev_track_from_invalid_index_starts_at_end_of_range(loaded):
+    """prev_track 从无效索引(-1) 起，应该落到当前播放范围的最后一首。
+    loaded fixture 有 3 首、1 个组、active_group=0 → 范围 (0,3) → end-1=2"""
     loaded._current_index = -1
 
     loaded.prev_track()
 
-    assert loaded.get_current_index() == 0
+    assert loaded.get_current_index() == 2
 
 
 def test_prev_track_decrements(loaded):

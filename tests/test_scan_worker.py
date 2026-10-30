@@ -21,7 +21,7 @@ def tag(duration=10.0):
     return types.SimpleNamespace(title="T", artist="A", album="B", duration=duration)
 
 
-@pytest.mark.parametrize("name", ["a.mp3", "b.wav", "c.flac", "d.ogg", "e.m4a", "f.aac", "g.wma", "h.opus"])
+@pytest.mark.parametrize("name", ["a.mp3", "b.wav", "c.flac", "d.ogg", "e.opus"])
 def test_scan_worker_supports_each_extension(tmp_path, name):
     path = tmp_path / name
     path.write_bytes(b"")
@@ -35,6 +35,18 @@ def test_scan_worker_supports_each_extension(tmp_path, name):
     assert list(cache) == [str(path)]
 
 
+@pytest.mark.parametrize("name", ["a.m4a", "b.aac", "c.wma"])
+def test_scan_worker_skips_formats_backend_cannot_play(tmp_path, name):
+    """m4a/aac/wma 不在 just_playback 的支持集合里，扫描阶段就应排除。"""
+    path = tmp_path / name
+    path.write_bytes(b"")
+
+    result = run_worker(ScanWorker(str(tmp_path)))
+
+    assert len(result["ok"]) == 1
+    assert result["ok"][0][1] == 0
+
+
 def test_scan_worker_recurses_and_skips_non_audio(make_tree):
     base = make_tree({"Album": ["a.mp3", "cover.jpg"], "Album/Disc2": ["b.flac"]})
 
@@ -46,6 +58,11 @@ def test_scan_worker_recurses_and_skips_non_audio(make_tree):
         os.path.abspath(str(base / "Album" / "a.mp3")),
         os.path.abspath(str(base / "Album" / "Disc2" / "b.flac")),
     ])
+
+
+def _strip_meta(meta: dict) -> dict:
+    """去掉 ScanWorker 返回的 _mtime 内部字段，只保留 metadata 内容。"""
+    return {k: v for k, v in meta.items() if not k.startswith("_")}
 
 
 def test_scan_worker_reuses_existing_cache(tmp_path, monkeypatch):
@@ -70,7 +87,7 @@ def test_scan_worker_reuses_existing_cache(tmp_path, monkeypatch):
 
     _, count, cache = result["ok"][0]
     assert count == 3
-    assert cache[paths[0]] == cached_meta  # 命中缓存，内容原样保留
+    assert _strip_meta(cache[paths[0]]) == cached_meta  # 命中缓存，metadata 内容原样保留
     assert sorted(read) == sorted(paths[1:])
 
 
@@ -82,7 +99,7 @@ def test_scan_worker_formats_duration(tmp_path, monkeypatch):
 
     _, _, cache = result["ok"][0]
     meta = next(iter(cache.values()))
-    assert meta == {"title": "T", "artist": "A", "album": "B", "duration": "12.3"}
+    assert _strip_meta(meta) == {"title": "T", "artist": "A", "album": "B", "duration": "12.3"}
 
 
 def test_scan_worker_handles_unreadable_tags(tmp_path, monkeypatch):

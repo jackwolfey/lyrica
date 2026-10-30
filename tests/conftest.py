@@ -127,6 +127,8 @@ class FakePlayback:
 def _install_fake_backend() -> None:
     module = types.ModuleType("just_playback")
     module.Playback = FakePlayback
+    # 与 just_playback 1.0.0 保持一致：报的是"格式名"，不含点号
+    module.SUPPORTED_AUDIO_FORMATS = frozenset({"wav", "mp3", "flac", "ogg-vorbis", "ogg-opus"})
     module.__version__ = "fake"
     sys.modules["just_playback"] = module
 
@@ -134,7 +136,7 @@ def _install_fake_backend() -> None:
 _install_fake_backend()  # 必须早于任何 `import src.player`
 
 
-AUDIO_NAMES = ["a.mp3", "b.flac", "c.ogg", "d.wav", "e.m4a", "f.aac", "g.wma", "h.opus"]
+AUDIO_NAMES = ["a.mp3", "b.flac", "c.ogg", "d.wav", "e.opus"]
 
 
 def write_files(folder: Path, names) -> list:

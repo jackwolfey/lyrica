@@ -1,33 +1,32 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-Lyrica PyInstaller spec — 单文件、最小化体积
-用法（Windows）：
-    pyinstaller Lyrica.spec --clean --noconfirm
+Lyrica PyInstaller spec — 单文件、最小化体积、跨平台
+用法：
+    Windows:  pyinstaller Lyrica.spec --clean --noconfirm  → dist/Lyrica.exe
+    macOS:    pyinstaller Lyrica.spec --clean --noconfirm  → dist/Lyrica + dist/Lyrica.app
+    Linux:    pyinstaller Lyrica.spec --clean --noconfirm  → dist/Lyrica
 
-产物：
-    dist/Lyrica.exe   单文件可执行程序
-    lyrica_settings.json 自动保存在 exe 同目录（main_window.settings_path 已处理 sys.frozen）
+Windows 原有逻辑 100% 不变，所有跨平台改动都在 sys.platform 条件分支里。
 """
 
 import os
 import sys
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 block_cipher = None
 
-# ---------- 需要显式 collect 的隐式依赖 ----------
+# ---------- 三端共用 hiddenimports ----------
 hiddenimports = [
-    # just_playback 运行时动态加载
+    # just_playback 运行时动态加载（基于 Rust miniaudio 的 cffi 绑定）
     "just_playback",
     # tinytag 纯 Python 但 PyInstaller 偶有漏
     "tinytag",
     # concurrent.futures — ScanWorker 并行用
     "concurrent.futures",
-    # cffi 后端 — just_playback 依赖的 miniaudio 绑定走 cffi，PyInstaller 静态扫描不到
+    # cffi 后端 — PyInstaller 静态扫描不到 cffi 动态加载
     "_cffi_backend",
 ]
 
-# PySide6 可能漏的平台插件（Windows 下）
+# Windows 额外补几个 PySide6 插件（原有逻辑不变）
 if sys.platform.startswith("win"):
     hiddenimports += [
         "PySide6.QtSvg",          # 图标渲染
@@ -56,12 +55,21 @@ excludes = [
     "PyInstaller.utils.cliutils",
 ]
 
-# ---------- 图标（Windows 用 .ico，其余平台由系统/desktop 文件处理） ----------
+# ---------- 平台条件 ----------
+_is_windows = sys.platform.startswith("win")
+_is_macos = sys.platform == "darwin"
+_is_linux = sys.platform.startswith("linux")
+
+# 图标（只有 Windows 需要 .ico）
 _icon = None
-if sys.platform.startswith("win"):
+if _is_windows:
     _ico = os.path.join(os.path.dirname(SPEC), "lyrica.ico")
-    if os.path.exists(_ico):
-        _icon = _ico
+    if not os.path.exists(_ico):
+        _icon = None
+
+# UPX: macOS 关掉（压缩后会触发 Gatekeeper 警告且无法运行）
+# Windows / Linux 开启（PyInstaller 会自动下载 UPX）
+_use_upx = not _is_macos
 
 # ---------- 构建 ----------
 a = Analysis(
@@ -92,11 +100,11 @@ exe = EXE(
     name="Lyrica",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,              # ← strip 掉符号表，体积 -30%~50%（Windows 下 PyInstaller 会走 UPX 或自带 strip）
-    upx=True,                # ← 启用 UPX 压缩（系统需有 upx 命令；Windows 下会自动下载）
+    strip=True,              # strip 掉符号表，体积 -30%~50%
+    upx=_use_upx,            # macOS=False 避免 Gatekeeper，Windows/Linux=True
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,           # ← 无控制台窗口（正式版）；调试时改 True
+    console=False,           # 无控制台窗口；macOS/Linux 无害保留
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -104,3 +112,26 @@ exe = EXE(
     entitlements_file=None,
     icon=_icon,
 )
+
+# ---------- macOS: 额外生成 .app bundle ----------
+# PyInstaller 会把单文件 EXE 包进 .app/Contents/MacOS/Lyrica
+# 方便用户双击运行，绕过 Gatekeeper 裸二进制问题
+if _is_macos:
+    app = BUNDLE(
+        exe,
+        name="Lyrica.app",
+        icon=None,
+        bundle_identifier="com.lyrica.player",
+        bundle_short_version="1.1.0",
+        bundle_version="1.1.0",
+        info_plist={
+            "CFBundleName": "Lyrica",
+            "CFBundleDisplayName": "Lyrica",
+            "CFBundleIdentifier": "com.lyrica.player",
+            "CFBundleShortVersionString": "1.1.0",
+            "CFBundleVersion": "1.1.0",
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": "11.0",
+            "LSUIElement": False,
+        },
+    )

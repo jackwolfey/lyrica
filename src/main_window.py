@@ -9,19 +9,127 @@ import os
 import sys
 from typing import Any, Dict, Optional
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Slot, QThread, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QPen
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Slot, QThread, Signal, QTimer
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QPen, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QSlider, QSplitter, QSystemTrayIcon,
-    QVBoxLayout, QWidget, QGridLayout
+    QVBoxLayout, QWidget, QGridLayout, QStyledItemDelegate
 )
 
-from .player import PlayMode, MusicPlayer
+from .player import PlayMode, MusicPlayer, SUPPORTED_EXTENSIONS
+
+
+# v1.1: 自定义 delegate —— 给"正在播放"的 item 画一个空心圆角矩形
+class PlayingItemDelegate(QStyledItemDelegate):
+    """在 QListWidget 正常选中/未选中之外，再叠加一个"正在播放"的视觉标记：
+    一个半透明主题色的空心圆角矩形。通过 playing_index_getter callable
+    实时获取当前"正在播放"的 row index，解耦状态管理。"""
+
+    def __init__(self, playing_index_getter=None, parent=None):
+        super().__init__(parent)
+        self._get_playing = playing_index_getter
+
+    def paint(self, painter, option, index):
+        # 1. 先画 Qt 默认的选中/未选中
+        super().paint(painter, option, index)
+        # 2. 如果这行就是"正在播放"的 item，叠一个空心圆角矩形
+        playing_row = self._get_playing() if self._get_playing else None
+        if playing_row is not None and index.row() == playing_row:
+            rect = option.rect.adjusted(3, 2, -3, -2)
+            pen = QPen(QColor("#89b4fa"))  # Catppuccin blue
+            pen.setWidth(2)
+            pen.setCosmetic(True)          # 缩放时线宽不变
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect, 6, 6)
+
+
+# v1.1: 单行超长横向滚动（marquee）标签
+class _MarqueeLabel(QLabel):
+    """默认居中显示；文本宽度超过 label 宽度时，自动从右向左横向滚动。
+    滚动一次后停住，当文本变短/窗口变宽到足以显示完整时自动停止滚动。"""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._offset = 0          # 当前滚动偏移（像素）
+        self._marquee_active = False
+        self._scroll_speed = 1.0   # 每 tick 滚动像素
+        self._scroll_interval = 40  # ms（约 25 fps）
+        self._marquee_timer = QTimer(self)
+        self._marquee_timer.timeout.connect(self._tick_marquee)
+        self.setAlignment(Qt.AlignCenter)
+
+    def setText(self, text):
+        super().setText(text)
+        self._restart_marquee()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._restart_marquee()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._restart_marquee()
+
+    def _restart_marquee(self):
+        self._marquee_timer.stop()
+        self._offset = 0
+        self._marquee_active = False
+        # 超出宽度 → 启用 marquee
+        fm = self.fontMetrics()
+        text_width = fm.horizontalAdvance(self.text())
+        label_width = self.width()
+        if text_width > label_width + 4:  # 留 4px 裕量
+            self._marquee_active = True
+            self._marquee_timer.start(self._scroll_interval)
+        self.update()
+
+    def _tick_marquee(self):
+        fm = self.fontMetrics()
+        text_width = fm.horizontalAdvance(self.text())
+        label_width = self.width()
+        gap = 40  # 滚动一圈后留空多少像素再回来
+
+        # 如果窗口变宽到能完整显示 → 停止
+        if text_width <= label_width + 4:
+            self._marquee_active = False
+            self._marquee_timer.stop()
+            self._offset = 0
+            self.update()
+            return
+
+        max_offset = text_width + gap
+        self._offset += self._scroll_speed
+        if self._offset > max_offset:
+            self._offset = 0
+        self.update()
+
+    def paintEvent(self, event):
+        if not self._marquee_active:
+            super().paintEvent(event)
+            return
+        from PySide6.QtGui import QPainter
+        painter = QPainter(self)
+        painter.setPen(self.palette().windowText().color())
+        fm = painter.fontMetrics()
+        text = self.text()
+        text_w = fm.horizontalAdvance(text)
+        label_w = self.width()
+        gap = 40  # 两段文本间的间隔
+        # 垂直居中：baseline y 坐标
+        v_center = (self.height() + fm.ascent() - fm.descent()) // 2
+
+        # 从居中位置开始，随 offset 向左移动；滚出左边后右边再跟一份
+        cur_x = (label_w - text_w) // 2 - self._offset
+        painter.drawText(int(cur_x), v_center, text)
+        painter.drawText(int(cur_x + text_w + gap), v_center, text)
+        painter.end()
+
 
 APP_NAME = "Lyrica"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.1.0"
 SETTINGS_FILENAME = "lyrica_settings.json"
 
 
@@ -63,15 +171,22 @@ class ScanWorker(QThread):
             for root, dirs, files in os.walk(self._folder):
                 for fname in files:
                     ext = os.path.splitext(fname)[1].lower()
-                    if ext in (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".opus"):
+                    if ext in SUPPORTED_EXTENSIONS:
                         all_paths.append(os.path.join(root, fname))
 
-            # Step 2: 已缓存的直接复用，跳过 TinyTag
+            # Step 2: 已缓存的直接复用，跳过 TinyTag；同时确保 _mtime 存在
             meta_cache: dict = {}
             need_read: list = []
             for p in all_paths:
                 if p in self._existing:
-                    meta_cache[p] = self._existing[p]
+                    # 拷贝 + 补 _mtime（老版本持久化恢复的缓存可能缺 _mtime）
+                    entry = dict(self._existing[p])
+                    if "_mtime" not in entry:
+                        try:
+                            entry["_mtime"] = os.path.getmtime(p)
+                        except OSError:
+                            pass
+                    meta_cache[p] = entry
                 else:
                     need_read.append(p)
 
@@ -80,12 +195,17 @@ class ScanWorker(QThread):
                 def _read_one(p):
                     try:
                         tag = TinyTag.get(p)
-                        return p, {
+                        entry = {
                             "title": tag.title,
                             "artist": tag.artist,
                             "album": tag.album,
                             "duration": f"{tag.duration:.1f}" if tag.duration is not None else None,
                         }
+                        try:
+                            entry["_mtime"] = os.path.getmtime(p)
+                        except OSError:
+                            pass
+                        return p, entry
                     except Exception:
                         return p, {"title": None, "artist": None, "album": None, "duration": None}
 
@@ -185,24 +305,38 @@ class MainWindow(QMainWindow):
         root.setSpacing(6)
 
         # ---------- 顶部：歌曲信息 + 元数据 ----------
-        self.lbl_title = QLabel("未加载曲目")
+        # 标题栏：单行 + 超长自动横向滚动（marquee）
+        self.lbl_title = _MarqueeLabel("未加载曲目")
         self.lbl_title.setAlignment(Qt.AlignCenter)
         font = self.lbl_title.font()
         font.setPointSize(13)
         font.setBold(True)
         self.lbl_title.setFont(font)
-        self.lbl_title.setWordWrap(True)
         self.lbl_title.setMinimumHeight(24)
+        self.lbl_title.setMaximumHeight(30)  # 强制单行高度
         self.lbl_title.setContextMenuPolicy(Qt.CustomContextMenu)
         self.lbl_title.customContextMenuRequested.connect(self._show_title_menu)
+        # v1.1: 左键点击标题栏 → 滚动并高亮当前正在播放的组和曲目
+        self.lbl_title.installEventFilter(self)
         root.addWidget(self.lbl_title)
 
-        # v1.0 新增：元数据标签（艺术家 - 专辑）
-        self.lbl_meta = QLabel("")
-        self.lbl_meta.setAlignment(Qt.AlignCenter)
-        self.lbl_meta.setStyleSheet("color:#a6adc8;")
-        self.lbl_meta.setMinimumHeight(16)
-        root.addWidget(self.lbl_meta)
+        # v1.0 新增，v1.1 改造：元数据两行各自独立 marquee
+        self.lbl_meta_title = _MarqueeLabel("")  # 曲目名行
+        self.lbl_meta_title.setAlignment(Qt.AlignCenter)
+        self.lbl_meta_title.setMinimumHeight(14)
+        self.lbl_meta_detail = _MarqueeLabel("")  # 艺术家 · 专辑行
+        self.lbl_meta_detail.setAlignment(Qt.AlignCenter)
+        self.lbl_meta_detail.setStyleSheet("color:#a6adc8;")
+        self.lbl_meta_detail.setMinimumHeight(14)
+        meta_col = QVBoxLayout()
+        meta_col.setContentsMargins(0, 0, 0, 0)
+        meta_col.setSpacing(0)
+        meta_col.addWidget(self.lbl_meta_title)
+        meta_col.addWidget(self.lbl_meta_detail)
+        meta_container = QWidget()
+        meta_container.setLayout(meta_col)
+        meta_container.setMaximumHeight(30)
+        root.addWidget(meta_container)
 
         # ---------- 进度条 + 时间 ----------
         progress_row = QHBoxLayout()
@@ -331,6 +465,24 @@ class MainWindow(QMainWindow):
             lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             lst.setTextElideMode(Qt.ElideRight)
 
+        # v1.1: 接 delegate —— 给"正在播放"项画空心圆角矩形
+        # groups_list: 哪一组包含当前播放的曲目
+        def _playing_group_row():
+            flat = self.player.get_current_index()
+            if flat < 0: return None
+            return self.player.get_group_of_track(flat)
+
+        # tracks_list: 当前 active_group 内哪首正在播放（若不在当前组则不高亮）
+        def _playing_track_row():
+            flat = self.player.get_current_index()
+            if flat < 0: return None
+            gi = self.player.get_group_of_track(flat)
+            if gi != self.player.get_active_group_index(): return None
+            return self.player.get_track_index_in_group(flat)
+
+        self.groups_list.setItemDelegate(PlayingItemDelegate(_playing_group_row))
+        self.tracks_list.setItemDelegate(PlayingItemDelegate(_playing_track_row))
+
         right_container = QFrame()
         right_container.setObjectName("rightPanel")
         right_layout = QVBoxLayout(right_container)
@@ -370,6 +522,72 @@ class MainWindow(QMainWindow):
         self.player.volume_changed.connect(self._on_volume_external)
         self.player.play_mode_changed.connect(self._on_play_mode_external)
         self.player.error_occurred.connect(self._on_error)
+
+        # v1.1: 全局快捷键（窗口焦点内生效）
+        QShortcut(QKeySequence(Qt.Key_Space), self, activated=self.player.toggle_play_pause)
+        QShortcut(QKeySequence(Qt.Key_Left),   self, activated=self._seek_backward)
+        QShortcut(QKeySequence(Qt.Key_Right),  self, activated=self._seek_forward)
+        QShortcut(QKeySequence(Qt.Key_Up),     self, activated=self._volume_up)
+        QShortcut(QKeySequence(Qt.Key_Down),   self, activated=self._volume_down)
+        # 切歌备选（避免某些键盘上方向键布局导致冲突）
+        QShortcut(QKeySequence(Qt.Key_Comma),  self, activated=self.player.prev_track)
+        QShortcut(QKeySequence(Qt.Key_Period), self, activated=self.player.next_track)
+
+    # ==================== 全局快捷键辅助槽（v1.1 新增） ====================
+
+    @Slot()
+    def _seek_backward(self):
+        self.player.seek(max(0.0, self.player.get_current_position() - 5))
+
+    @Slot()
+    def _seek_forward(self):
+        self.player.seek(min(self.player.get_duration(), self.player.get_current_position() + 5))
+
+    @Slot()
+    def _volume_up(self):
+        self.player.set_volume(min(1.0, self.player.get_volume() + 0.05))
+
+    @Slot()
+    def _volume_down(self):
+        self.player.set_volume(max(0.0, self.player.get_volume() - 0.05))
+
+    # ==================== 标题栏点击 → 滚动高亮正在播放（v1.1 新增） ====================
+
+    def eventFilter(self, obj, event):
+        # 监听 lbl_title 左键点击 → 滚动到正在播放的曲目
+        if obj is self.lbl_title and event.type() == QEvent.MouseButtonPress:
+            if event.button() == Qt.LeftButton:
+                self._scroll_to_playing()
+                return True  # 吃掉左键，不触发任何默认行为
+        return super().eventFilter(obj, event)
+
+    @Slot()
+    def _scroll_to_playing(self):
+        """把左侧播放组和右侧曲目列表滚动并高亮到"正在播放"的那一项。
+        如果当前激活的播放组里没有正在播放的曲目，会自动切换组。"""
+        flat = self.player.get_current_index()
+        if flat < 0:
+            return
+        gi = self.player.get_group_of_track(flat)
+        ti = self.player.get_track_index_in_group(flat)
+
+        # 1. 让 player 切到正确的播放组 —— set_active_group 会 emit
+        #    active_group_changed → _on_active_group_external → 刷新 tracks_list + 同步 groups_list 选中
+        if 0 <= gi < self.groups_list.count():
+            self.player.set_active_group(gi)
+            self.groups_list.scrollToItem(
+                self.groups_list.item(gi), QListWidget.EnsureVisible
+            )
+
+        # 2. tracks_list 已被上面的 set_active_group 刷新成正确组，
+        #    现在在其中高亮正在播放的曲目并滚动可见
+        if 0 <= ti < self.tracks_list.count():
+            self.tracks_list.blockSignals(True)
+            self.tracks_list.setCurrentRow(ti)
+            self.tracks_list.blockSignals(False)
+            self.tracks_list.scrollToItem(
+                self.tracks_list.item(ti), QListWidget.PositionAtCenter
+            )
 
     # ==================== 系统托盘（v1.0 新增） ====================
 
@@ -725,16 +943,21 @@ class MainWindow(QMainWindow):
     def _on_track_changed(self, flat_index: int):
         if 0 <= flat_index < self.player.get_track_count():
             path = self.player.get_playlist()[flat_index]
-            # 标题
+            # 标题（单行 + 超长自动 marquee）
             name = self.player.get_track_name(flat_index)
             self.lbl_title.setText(f"🎵 {name}")
             self.lbl_title.setToolTip(path)
-            # 元数据（v1.0 新增）
+            # 元数据（v1.1 改造为两个独立 marquee label）
             meta = self.player.get_track_metadata(path)
+            track_title = meta.get("title") or ""
+            # fallback：用无扩展名的文件名
+            if not track_title:
+                track_title = os.path.splitext(os.path.basename(path))[0]
+            self.lbl_meta_title.setText(track_title)
             parts = []
             if meta.get("artist"): parts.append(meta["artist"])
             if meta.get("album"): parts.append(meta["album"])
-            self.lbl_meta.setText(" · ".join(parts) if parts else "")
+            self.lbl_meta_detail.setText(" · ".join(parts) if parts else "")
 
             # 高亮左侧组
             gi = self.player.get_group_of_track(flat_index)
@@ -750,7 +973,8 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_title.setText("未加载曲目")
             self.lbl_title.setToolTip("")
-            self.lbl_meta.setText("")
+            self.lbl_meta_title.setText("")
+            self.lbl_meta_detail.setText("")
 
     @Slot()
     def _refresh_groups_list(self):
@@ -774,7 +998,15 @@ class MainWindow(QMainWindow):
         self.tracks_list.clear()
         if 0 <= gi:
             tracks = self.player.get_group_tracks(gi)
-            self.tracks_list.addItems([os.path.basename(t) for t in tracks])
+            # 每行用 _MarqueeLabel 作为 widget，超长自动横向滚动
+            for t in tracks:
+                row = QListWidgetItem(self.tracks_list)
+                row.setData(Qt.UserRole, t)  # 存完整路径
+                label = _MarqueeLabel(os.path.basename(t))
+                label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+                label.setContentsMargins(4, 0, 4, 0)
+                self.tracks_list.addItem(row)
+                self.tracks_list.setItemWidget(row, label)
             self.lbl_tracks_header.setText(f"🎵 {len(tracks)} 首")
 
             # 仅在真正有已加载曲目时恢复高亮
