@@ -477,16 +477,15 @@ class MainWindow(QMainWindow):
         gi = self.player.get_group_of_track(flat)
         ti = self.player.get_track_index_in_group(flat)
 
-        # 1. 切到正确的播放组（会自动刷新 tracks_list）
+        # 1. 让 player 切到正确的播放组 —— set_active_group 会 emit
+        #    active_group_changed → _on_active_group_external → 刷新 tracks_list + 同步 groups_list 选中
         if 0 <= gi < self.groups_list.count():
-            self.groups_list.blockSignals(True)
-            self.groups_list.setCurrentRow(gi)
-            self.groups_list.blockSignals(False)
+            self.player.set_active_group(gi)
             self.groups_list.scrollToItem(
                 self.groups_list.item(gi), QListWidget.EnsureVisible
             )
 
-        # 2. tracks_list 自动切到了正确组（由上面的 setCurrentRow 触发），
+        # 2. tracks_list 已被上面的 set_active_group 刷新成正确组，
         #    现在在其中高亮正在播放的曲目并滚动可见
         if 0 <= ti < self.tracks_list.count():
             self.tracks_list.blockSignals(True)
