@@ -2,7 +2,7 @@
 
 > 轻量级本地音乐播放器 · Python + PySide6 + just_playback
 > 
-> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → v1.0.4 → **v1.0.5**
+> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → v1.0.4 → v1.0.5 → **v1.1.0**
 
 ---
 
@@ -15,6 +15,7 @@ lyrica/
 ├── requirements.txt       运行依赖
 ├── requirements-dev.txt   开发依赖（pytest / pytest-cov）
 ├── pytest.ini             pytest 配置（testpaths=tests）
+├── .github/workflows/     ci.yml（测试）+ release.yml（tag 触发三端打包发布）
 ├── tests/                 pytest 测试套件（conftest 提供假音频后端）
 │   ├── conftest.py            FakePlayback / 离屏 QApplication / 公共夹具
 │   ├── test_player_groups.py  播放组模型：扫描、去重、排序、移动、恢复
@@ -90,7 +91,7 @@ class MusicPlayer(QObject):
 
 **为什么有两套列表？**
 - `_groups`：给 UI 展示用，左侧面板一个 PlaylistGroup = 一个文件夹
-- `_playlist`（平铺）：给播放控制用，上一曲 / 下一曲 / 三种循环模式只需要操作这一个一维列表
+- `_playlist`（平铺）：给播放控制用，上一曲 / 下一曲 / 各种循环模式只需要操作这一个一维列表
 
 组内曲目变化 → 调 `_rebuild_flat_playlist()` 重新平铺。
 
@@ -108,7 +109,7 @@ track_changed      # int，平铺列表索引 — 高亮当前曲目
 playlist_changed   # 无参数，平铺列表变了 → 刷新右侧曲目面板
 groups_changed     # 无参数，组列表变了 → 刷新左侧播放组面板
 active_group_changed  # int，当前组索引
-play_mode_changed  # PlayMode，三种循环切换
+play_mode_changed  # PlayMode，播放模式切换
 volume_changed     # float
 error_occurred     # str，错误消息
 ```
@@ -138,7 +139,7 @@ Step 3: need_read 的 → ThreadPoolExecutor(max_workers=8) 并行读
 
 ```json
 {
-  "version": "1.0.5",
+  "version": "1.1.0",
   "play_mode": "LIST_LOOP",
   "volume": 0.7,
   "window_size": {"w": 800, "h": 500},
@@ -238,7 +239,7 @@ QApplication 启动
 - **滑块手柄改白**：`QSlider::handle:horizontal` 从 `#f5c2e7` 改为 `#ffffff`（进度条与音量条共用）
 - **播放组文字贴左**：移除 `_refresh_groups_list` 里的两个前导空格，QSS 左侧 padding 6→3
 
-### v1.0.5（当前）
+### v1.0.5
 > 布局解耦 + UI 细节打磨 + 文档完善
 - **控制栏彻底居中**：底部控制区从 `QHBoxLayout` 重构为 `QGridLayout`。将左（模式选择）、中（播放控制）、右（音量）分别放入同一个 Grid 的 `(0,0)` 格子并通过 `Qt.Align` 独立对齐。彻底解决了左侧下拉框宽度变化导致中间播放按钮偏移的问题。
 - **下拉框自适应宽度**：`cmb_mode` 移除硬编码的 `120px`，改为根据 `fontMetrics().horizontalAdvance()` 动态计算最长文本宽度，视觉更紧凑。
@@ -247,6 +248,18 @@ QApplication 启动
 - **代码风格全面规范化**：清理了全项目约 50 处使用分号 `;` 连接的多语句单行代码，重构为标准换行，大幅提升代码可读性。
 - **README 补全**：新增详细的「🎮 使用说明」章节，涵盖添加歌曲、播放控制、托盘驻留及状态保存机制。
 - **版本管理**：清理了 `main.py` 中硬编码的版本号，统一由 `main_window.py` 的 `APP_VERSION` 控制。
+
+### v1.1.0（当前）
+> 播放范围语义重构 + 元数据 TTL + 快捷键 + 视觉定位 + 跨平台自动发布
+- **播放模式拆为五种**：`SEQUENCE`（组内顺序）/ `LIST_LOOP`（组内循环）/ `CROSS_SEQUENCE`（跨组顺序）/ `CROSS_LIST_LOOP`（跨组循环）/ `SINGLE_LOOP`（单曲循环）。新增 `_is_cross_mode()` 与 `_get_play_range()`，上一曲/下一曲/自动续播统一按当前模式的播放范围判断，修正了此前"组内模式实际作用于全曲库"的语义错位
+- **meta_cache TTL**：缓存条目记录文件 `mtime`，查询时比对；文件被重新打标签（mtime 变化）自动重读 TinyTag，旧缓存条目（无 `_mtime`）自动补齐，保证失效链路完整
+- **窗口内全局快捷键**：空格播放暂停、←/→ 快退快进 5s、↑/↓ 音量 ±5%、`,`/`.` 切换上/下一曲（`QShortcut` 绑定在主窗口）
+- **正在播放视觉标记**：自定义 `PlayingItemDelegate` 为播放中的组和曲目叠加空心圆角矩形，与普通选中态区分
+- **标题栏定位**：左键单击标题栏 → 自动切回播放中的播放组、滚动并高亮当前曲目（走 `player.set_active_group()` 保证数据与视觉同步）
+- **超长文本滚动**：新增 `_MarqueeLabel`，标题栏、曲目名、艺术家 · 专辑、曲目列表行在文本超宽时横向循环滚动，窗口拉宽后自动恢复居中静态
+- **扩展名来源收敛**：音频格式以 `just_playback.SUPPORTED_AUDIO_FORMATS`（1.0.0 起公开）为唯一来源，经格式名→扩展名映射得到 `.mp3 .wav .flac .ogg .opus`；扫描与播放过滤共用 `SUPPORTED_EXTENSIONS`，不再收录后端无法解码的 `.m4a .aac .wma`
+- **依赖收紧**：`just_playback` 固定为 `== 1.0.0`，Python 最低版本提升到 3.9
+- **跨平台构建 + 自动发布**：`Lyrica.spec` 适配 Windows / macOS / Linux（macOS 生成 `.app` 且关闭 UPX），新增 tag 触发的 GitHub Actions 流水线，三端产物并行打包并自动创建 Release
 
 ---
 
@@ -271,8 +284,8 @@ QApplication 启动
 | 均衡器 / 音效 | 依赖 just_playback（miniaudio 无 DSP API） | 需换 sounddevice 回调引擎，v2.0 级别 |
 | LRC 歌词 | 未做 | 同目录同名 .lrc 文件自动匹配，实现不难 |
 | Model/View 架构 | QListWidget（Widget 模式） | 曲目超 5000 首时建议换成 QAbstractListModel |
-| meta_cache TTL | 无 | 文件被重新打标签后缓存过期，需加 mtime 校验 |
-| 全局快捷键 | 未做 | 空格播放暂停、←/→ 快进，30 行代码 |
+| m4a / aac / wma 播放 | 后端（miniaudio）无对应解码器，扫描阶段已排除 | 需引入 ffmpeg 转码层或换 QtMultimedia / PyAV，会牺牲"轻量"定位 |
+| 系统级全局热键 | 已有窗口内 `QShortcut` | 窗口失焦时仍需 QHotkey 或各平台 RegisterHotKey 封装 |
 | `reset_group_order` 索引未重映射 | 重排后 `_current_index` 仍指向旧位置 | 照抄 `_swap_groups` 的 `playing_path → index()` 恢复逻辑 |
 
 ---
@@ -280,18 +293,25 @@ QApplication 启动
 ## 九、PyInstaller 打包
 
 ```bash
-# Windows
+# 三端通用（在目标平台上执行，PyInstaller 不支持交叉编译）
 pip install pyinstaller
 pyinstaller Lyrica.spec --clean --noconfirm
 
 # 产物
-dist/Lyrica.exe          单文件可执行程序
-# lyrica_settings.json 自动保存在 exe 同目录
+dist/Lyrica.exe            Windows 单文件可执行程序
+dist/Lyrica.app            macOS 应用包（同时产出 dist/Lyrica 裸二进制）
+dist/Lyrica                Linux 可执行文件
+# lyrica_settings.json 自动保存在可执行文件同目录
 # （main_window.settings_path 已处理 sys.frozen → sys.executable 所在目录）
 ```
 
+自动化：推送 `v*.*.*` tag 触发 `.github/workflows/release.yml`，在
+`windows-latest` / `macos-latest` / `ubuntu-20.04` 三端并行打包，
+自动创建 GitHub Release 并上传 `Lyrica-Windows-x64.exe`、
+`Lyrica-macOS-arm64.zip`、`Lyrica-Linux-x86_64.tar.gz`。
+
 spec 关键配置：
-- `strip=True` + `upx=True`：体积最小化（-60% ~ -80%）
+- `strip=True` + Windows/Linux `upx=True`：体积最小化（-60% ~ -80%）；macOS 关闭 UPX，避免 Gatekeeper 拦截压缩后的二进制
 - `excludes=[...]`：排除 QtWebEngine / matplotlib / numpy 等无关模块
 - `hiddenimports=[..., "_cffi_backend"]`：just_playback 的 miniaudio 走 cffi，需显式声明
 - `console=False`：无控制台黑框（调试时改 True 看堆栈）
