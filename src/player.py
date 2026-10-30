@@ -18,9 +18,14 @@ SUPPORTED_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma",
 
 
 class PlayMode(Enum):
-    SEQUENCE = "顺序播放"
+    # 组内范围（v1.1：语义修正，原先是全曲库范围）
+    SEQUENCE = "组内顺序"
+    LIST_LOOP = "组内循环"
+    # 跨全曲库范围（v1.1 新增，对应原 SEQUENCE/LIST_LOOP 的实际行为）
+    CROSS_SEQUENCE = "跨组顺序"
+    CROSS_LIST_LOOP = "跨组循环"
+    # 单曲循环：永远只在当前曲目，无范围概念
     SINGLE_LOOP = "单曲循环"
-    LIST_LOOP = "列表循环"
 
 
 @dataclass
@@ -156,6 +161,24 @@ class MusicPlayer(QObject):
 
     def get_active_group_index(self) -> int:
         return self._active_group_index
+
+    def _is_cross_mode(self) -> bool:
+        """当前播放模式是否跨全曲库（vs 仅限 active group 内）"""
+        return self._play_mode in (PlayMode.CROSS_SEQUENCE, PlayMode.CROSS_LIST_LOOP)
+
+    def _get_play_range(self) -> tuple:
+        """返回当前播放范围在 flat playlist 中的 [start, end) 左闭右开。
+        跨组模式 → (0, len(_playlist))
+        组内模式 → active group 在 flat list 中的区间"""
+        if self._is_cross_mode():
+            return 0, len(self._playlist)
+        if not self._groups or self._active_group_index < 0:
+            return 0, len(self._playlist)
+        start = 0
+        for i in range(self._active_group_index):
+            start += len(self._groups[i].tracks)
+        end = start + len(self._groups[self._active_group_index].tracks)
+        return start, end
 
     def get_group_count(self) -> int:
         return len(self._groups)
@@ -632,15 +655,18 @@ class MusicPlayer(QObject):
     def next_track(self):
         if not self._playlist:
             return
+        start, end = self._get_play_range()
+        if start >= end:
+            return
         if self._current_index < 0:
-            self._current_index = 0
+            self._current_index = start
         else:
             self._current_index += 1
-            if self._current_index >= len(self._playlist):
-                if self._play_mode == PlayMode.LIST_LOOP:
-                    self._current_index = 0
+            if self._current_index >= end:
+                if self._play_mode in (PlayMode.LIST_LOOP, PlayMode.CROSS_LIST_LOOP):
+                    self._current_index = start
                 else:
-                    self._current_index = len(self._playlist) - 1
+                    self._current_index = end - 1
                     self.stop()
                     return
         self.track_changed.emit(self._current_index)
@@ -649,15 +675,18 @@ class MusicPlayer(QObject):
     def prev_track(self):
         if not self._playlist:
             return
+        start, end = self._get_play_range()
+        if start >= end:
+            return
         if self._current_index < 0:
-            self._current_index = 0
+            self._current_index = end - 1
         else:
             self._current_index -= 1
-            if self._current_index < 0:
-                if self._play_mode == PlayMode.LIST_LOOP:
-                    self._current_index = len(self._playlist) - 1
+            if self._current_index < start:
+                if self._play_mode in (PlayMode.LIST_LOOP, PlayMode.CROSS_LIST_LOOP):
+                    self._current_index = end - 1
                 else:
-                    self._current_index = 0
+                    self._current_index = start
         self.track_changed.emit(self._current_index)
         self.play()
 
@@ -730,10 +759,11 @@ class MusicPlayer(QObject):
                 QTimer.singleShot(200, self._handle_track_finished)
 
     def _handle_track_finished(self):
-        if self._play_mode == PlayMode.LIST_LOOP:
+        start, end = self._get_play_range()
+        if self._play_mode in (PlayMode.LIST_LOOP, PlayMode.CROSS_LIST_LOOP):
             self.next_track()
-        elif self._play_mode == PlayMode.SEQUENCE:
-            if self._current_index >= 0 and self._current_index < len(self._playlist) - 1:
+        elif self._play_mode in (PlayMode.SEQUENCE, PlayMode.CROSS_SEQUENCE):
+            if start <= self._current_index < end - 1:
                 self.next_track()
             else:
                 self.stop()
