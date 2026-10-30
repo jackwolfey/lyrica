@@ -15,10 +15,36 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QSlider, QSplitter, QSystemTrayIcon,
-    QVBoxLayout, QWidget, QGridLayout
+    QVBoxLayout, QWidget, QGridLayout, QStyledItemDelegate
 )
 
 from .player import PlayMode, MusicPlayer
+
+
+# v1.1: 自定义 delegate —— 给"正在播放"的 item 画一个空心圆角矩形
+class PlayingItemDelegate(QStyledItemDelegate):
+    """在 QListWidget 正常选中/未选中之外，再叠加一个"正在播放"的视觉标记：
+    一个半透明主题色的空心圆角矩形。通过 playing_index_getter callable
+    实时获取当前"正在播放"的 row index，解耦状态管理。"""
+
+    def __init__(self, playing_index_getter=None, parent=None):
+        super().__init__(parent)
+        self._get_playing = playing_index_getter
+
+    def paint(self, painter, option, index):
+        # 1. 先画 Qt 默认的选中/未选中
+        super().paint(painter, option, index)
+        # 2. 如果这行就是"正在播放"的 item，叠一个空心圆角矩形
+        playing_row = self._get_playing() if self._get_playing else None
+        if playing_row is not None and index.row() == playing_row:
+            rect = option.rect.adjusted(3, 2, -3, -2)
+            pen = QPen(QColor("#89b4fa"))  # Catppuccin blue
+            pen.setWidth(2)
+            pen.setCosmetic(True)          # 缩放时线宽不变
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect, 6, 6)
+
 
 APP_NAME = "Lyrica"
 APP_VERSION = "1.0.5"
@@ -207,6 +233,8 @@ class MainWindow(QMainWindow):
         self.lbl_title.setMinimumHeight(24)
         self.lbl_title.setContextMenuPolicy(Qt.CustomContextMenu)
         self.lbl_title.customContextMenuRequested.connect(self._show_title_menu)
+        # v1.1: 左键点击标题栏 → 滚动并高亮当前正在播放的组和曲目
+        self.lbl_title.installEventFilter(self)
         root.addWidget(self.lbl_title)
 
         # v1.0 新增：元数据标签（艺术家 - 专辑）
@@ -343,6 +371,24 @@ class MainWindow(QMainWindow):
             lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             lst.setTextElideMode(Qt.ElideRight)
 
+        # v1.1: 接 delegate —— 给"正在播放"项画空心圆角矩形
+        # groups_list: 哪一组包含当前播放的曲目
+        def _playing_group_row():
+            flat = self.player.get_current_index()
+            if flat < 0: return None
+            return self.player.get_group_of_track(flat)
+
+        # tracks_list: 当前 active_group 内哪首正在播放（若不在当前组则不高亮）
+        def _playing_track_row():
+            flat = self.player.get_current_index()
+            if flat < 0: return None
+            gi = self.player.get_group_of_track(flat)
+            if gi != self.player.get_active_group_index(): return None
+            return self.player.get_track_index_in_group(flat)
+
+        self.groups_list.setItemDelegate(PlayingItemDelegate(_playing_group_row))
+        self.tracks_list.setItemDelegate(PlayingItemDelegate(_playing_track_row))
+
         right_container = QFrame()
         right_container.setObjectName("rightPanel")
         right_layout = QVBoxLayout(right_container)
@@ -410,6 +456,45 @@ class MainWindow(QMainWindow):
     @Slot()
     def _volume_down(self):
         self.player.set_volume(max(0.0, self.player.get_volume() - 0.05))
+
+    # ==================== 标题栏点击 → 滚动高亮正在播放（v1.1 新增） ====================
+
+    def eventFilter(self, obj, event):
+        # 监听 lbl_title 左键点击 → 滚动到正在播放的曲目
+        if obj is self.lbl_title and event.type() == QEvent.MouseButtonPress:
+            if event.button() == Qt.LeftButton:
+                self._scroll_to_playing()
+                return True  # 吃掉左键，不触发任何默认行为
+        return super().eventFilter(obj, event)
+
+    @Slot()
+    def _scroll_to_playing(self):
+        """把左侧播放组和右侧曲目列表滚动并高亮到"正在播放"的那一项。
+        如果当前激活的播放组里没有正在播放的曲目，会自动切换组。"""
+        flat = self.player.get_current_index()
+        if flat < 0:
+            return
+        gi = self.player.get_group_of_track(flat)
+        ti = self.player.get_track_index_in_group(flat)
+
+        # 1. 切到正确的播放组（会自动刷新 tracks_list）
+        if 0 <= gi < self.groups_list.count():
+            self.groups_list.blockSignals(True)
+            self.groups_list.setCurrentRow(gi)
+            self.groups_list.blockSignals(False)
+            self.groups_list.scrollToItem(
+                self.groups_list.item(gi), QListWidget.EnsureVisible
+            )
+
+        # 2. tracks_list 自动切到了正确组（由上面的 setCurrentRow 触发），
+        #    现在在其中高亮正在播放的曲目并滚动可见
+        if 0 <= ti < self.tracks_list.count():
+            self.tracks_list.blockSignals(True)
+            self.tracks_list.setCurrentRow(ti)
+            self.tracks_list.blockSignals(False)
+            self.tracks_list.scrollToItem(
+                self.tracks_list.item(ti), QListWidget.PositionAtCenter
+            )
 
     # ==================== 系统托盘（v1.0 新增） ====================
 
