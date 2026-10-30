@@ -6,9 +6,9 @@ import sys
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QLabel, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QLabel, QSystemTrayIcon
 
 import src.main_window as mw
 from src.main_window import APP_NAME, APP_VERSION, AboutDialog, MainWindow, format_time
@@ -29,6 +29,24 @@ def make_files(folder: Path, names):
 
 def write_json(path: Path, data):
     path.write_text(json.dumps(data), encoding="utf-8")
+
+
+class _UpdateSpy(QObject):
+    """统计 viewport 收到的重绘请求（UpdateRequest / Paint）。
+
+    用于回归测试：正在播放行的圆角框由 delegate 在 paint 时绘制，
+    状态变化后必须有 viewport().update() 主动失效，否则框会滞后。
+    注意：update() 对隐藏控件是 no-op，使用前需 show()。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.count = 0
+
+    def eventFilter(self, _obj, event):
+        if event.type() in (QEvent.UpdateRequest, QEvent.Paint):
+            self.count += 1
+        return False
 
 
 class MenuRecorder:
@@ -244,6 +262,41 @@ def test_on_active_group_external_syncs_list(window, tmp_path):
     window._on_active_group_external(1)
 
     assert window.groups_list.currentRow() == 1
+
+
+def test_playing_marker_viewport_update_on_track_change(window, tmp_path):
+    """回归（v1.1.1 修复）：跨组切歌时左侧组列表必须主动失效重绘。
+
+    复现路径：正在播放组 A，用户已点选组 B（选中行 == 目标组），
+    此时双击播放 B 内曲目 —— 旧代码中所有 setCurrentRow 均为 no-op，
+    groups_list 收不到任何重绘请求，"正在播放"圆角框滞留在 A 行。
+    """
+    base = tmp_path / "music"
+    make_files(base / "A", ["a.mp3"])
+    make_files(base / "B", ["b.mp3"])
+    window.player.add_folder_recursive(str(base))
+    window._refresh_groups_list()
+    window.player.play_track_in_group(0, 0)
+
+    window.show()
+    app = QApplication.instance()
+    app.processEvents()
+
+    spy = _UpdateSpy()
+    window.groups_list.viewport().installEventFilter(spy)
+
+    # 模拟用户先浏览到目标组 B（选中态变化本身带来重绘，先冲掉计数）
+    window.groups_list.setCurrentRow(1)
+    app.processEvents()
+    spy.count = 0
+
+    # 双击播放 B 内曲目：目标行已是选中行 → 修复前没有任何重绘请求
+    window.player.play_track_in_group(1, 0)
+    app.processEvents()
+
+    assert window.player.get_group_of_track(window.player.get_current_index()) == 1
+    assert window.groups_list.currentRow() == 1
+    assert spy.count >= 1
 
 
 def test_on_track_changed_updates_labels_and_highlight(window, tmp_path):

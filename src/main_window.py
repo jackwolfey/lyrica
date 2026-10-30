@@ -527,6 +527,16 @@ class MainWindow(QMainWindow):
         self.player.play_mode_changed.connect(self._on_play_mode_external)
         self.player.error_occurred.connect(self._on_error)
 
+        # v1.1.1 修复：正在播放行的圆角框由 PlayingItemDelegate 在 paint 时现查
+        # player 状态绘制，但播放行变化时没有任何代码让相关行失效重绘，
+        # 此前全靠 setCurrentRow 的选中态副作用"碰运气"（目标行已是选中行时
+        # 为 no-op → 旧框残留 / 新框缺失）。这里在 track_changed /
+        # active_group_changed 时主动让两个列表 viewport 失效重绘，
+        # 保证圆角框即时搬家。update() 为排队式全表重绘，千行量级也是毫秒级。
+        for vp in (self.groups_list.viewport(), self.tracks_list.viewport()):
+            self.player.track_changed.connect(vp.update)
+            self.player.active_group_changed.connect(vp.update)
+
         # v1.1: 全局快捷键（窗口焦点内生效）
         QShortcut(QKeySequence(Qt.Key_Space), self, activated=self.player.toggle_play_pause)
         QShortcut(QKeySequence(Qt.Key_Left),   self, activated=self._seek_backward)
