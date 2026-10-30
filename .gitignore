@@ -1,6 +1,22 @@
+# Python
 __pycache__/
 *.pyc
+
+# PyInstaller / 构建产物
 build/
 dist/
+
+# 测试
 .pytest_cache/
+.coverage
+htmlcov/
+
+# 配置（运行时自动生成）
 lyrica_settings.json
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/

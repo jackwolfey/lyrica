@@ -1,0 +1,199 @@
+name: Release
+
+# ===== 触发条件 =====
+# 1. 推送语义化版本 tag (v1.0.6, v2.0.0 等) 自动触发
+# 2. 也支持手动在 Actions 页面点 "Run workflow"
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'tag 名称（用于手动触发时指定版本号）'
+        required: false
+        default: ''
+
+# ===== 全局权限 =====
+permissions:
+  contents: write    # 创建 Release + 上传资产必需
+
+# ===== 版本号解析（从 tag 推导） =====
+# 取 github.ref_name（tag 模式下自动为 vX.Y.Z）
+env:
+  VERSION: ${{ github.ref_name }}
+
+jobs:
+  # ============================================================
+  # 多平台并行构建
+  # ============================================================
+  build:
+    name: Build ${{ matrix.os_label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false    # 某个平台失败不阻塞其他平台
+      matrix:
+        include:
+          # Windows 10/11 (glibc/依赖最少，最稳定)
+          - os: windows-latest
+            os_label: Windows x64
+            artifact: Lyrica-Windows-x64.exe
+
+          # macOS arm64 (Apple Silicon M1/M2/M3)
+          - os: macos-latest
+            os_label: macOS arm64
+            artifact: Lyrica-macOS-arm64.zip
+
+          # Linux x86_64 (ubuntu-20.04 = glibc 2.31, 兼容绝大多数 Linux 桌面)
+          # 用 ubuntu-20.04 而非 latest(24.04) 是为了产物兼容老系统
+          - os: ubuntu-20.04
+            os_label: Linux x86_64
+            artifact: Lyrica-Linux-x86_64.tar.gz
+
+    steps:
+      # ---------- Step 1: 检出代码 ----------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------- Step 2: 装 Python ----------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      # ---------- Step 3: Linux 额外装系统依赖 ----------
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libxkbcommon-x11-0 libdbus-1-3 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 \
+            libxkbcommon0 libxcb-xfixes0
+
+      # ---------- Step 4: 装 PyInstaller ----------
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      # ---------- Step 5: 装项目运行依赖 ----------
+      - name: Install project dependencies
+        run: pip install -r requirements.txt
+
+      # ---------- Step 6: PyInstaller 打包 ----------
+      - name: Build with PyInstaller
+        run: pyinstaller Lyrica.spec --clean --noconfirm
+
+      # ---------- Step 7: 收集产物 + 打包 ----------
+      # Windows: 直接上传 Lyrica.exe
+      # macOS: 把 Lyrica.app + 裸 Lyrica 打 zip
+      # Linux: 把 Lyrica 打 tar.gz
+      - name: Package artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist\Lyrica.exe)) {
+            Write-Error "dist\Lyrica.exe not found!"
+            exit 1
+          }
+          Copy-Item dist\Lyrica.exe dist\${{ matrix.artifact }}
+
+      - name: Package artifacts (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          if [ ! -d dist/Lyrica.app ]; then
+            echo "dist/Lyrica.app not found!"
+            exit 1
+          fi
+          # 同时包含 .app 和裸二进制，方便不同场景
+          cd dist
+          zip -r ${{ matrix.artifact }} Lyrica.app Lyrica
+          cd ..
+
+      - name: Package artifacts (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if [ ! -f dist/Lyrica ]; then
+            echo "dist/Lyrica not found!"
+            exit 1
+          fi
+          cd dist
+          tar czf ${{ matrix.artifact }} Lyrica
+          cd ..
+
+      # ---------- Step 8: 上传到 Actions Artifacts（调试用） ----------
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          retention-days: 30
+
+  # ============================================================
+  # 等所有平台构建完 → 创建 GitHub Release 并上传
+  # 仅 push tag 触发时执行，workflow_dispatch 手动触发只跑 build 不发 Release
+  # ============================================================
+  release:
+    name: Create GitHub Release
+    needs: build          # 依赖 build job 全部完成
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (for release notes)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify assets
+        run: |
+          ls -lh release-assets/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Lyrica ${{ github.ref_name }}
+          body: |
+            ## 🎵 Lyrica ${{ github.ref_name }}
+
+            轻量级本地音乐播放器 · Python + PySide6 + just_playback
+
+            ### 📦 下载
+
+            | 平台 | 文件名 |
+            |------|--------|
+            | Windows x64 | `Lyrica-Windows-x64.exe`（单文件，双击即用） |
+            | macOS arm64 (Apple Silicon) | `Lyrica-macOS-arm64.zip`（解压后 `Lyrica.app` 双击运行） |
+            | Linux x86_64 | `Lyrica-Linux-x86_64.tar.gz`（`tar xzf` 解压后 `./Lyrica` 运行） |
+
+            > macOS 用户注意：首次运行若弹出"已损坏"，请 **右键 → 打开** → 点"打开"绕过 Gatekeeper。
+            > 
+            > Linux 产物基于 ubuntu-20.04 (glibc 2.31) 构建，兼容 Ubuntu 20.04+、Debian 11+、Fedora 34+ 等主流发行版。
+
+            ### 🚀 安装
+
+            ```bash
+            # Windows: 直接双击 Lyrica-Windows-x64.exe
+            # macOS:   unzip Lyrica-macOS-arm64.zip → 双击 Lyrica.app
+            # Linux:   tar xzf Lyrica-Linux-x86_64.tar.gz → ./Lyrica
+            ```
+
+            ### 🛠️ 技术栈
+
+            - **UI**: PySide6 (Qt 6)
+            - **音频后端**: just_playback (Rust miniaudio)
+            - **元数据**: tinytag
+
+            ---
+
+            *自动生成自 commit ${{ github.sha }}*
+          files: release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}   # v1.0.6-beta 这类带横杠的 tag 标为 prerelease
