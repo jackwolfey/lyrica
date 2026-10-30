@@ -64,12 +64,19 @@ _is_linux = sys.platform.startswith("linux")
 _icon = None
 if _is_windows:
     _ico = os.path.join(os.path.dirname(SPEC), "lyrica.ico")
-    if not os.path.exists(_ico):
-        _icon = None
+    if os.path.exists(_ico):
+        _icon = _ico
 
-# UPX: macOS 关掉（压缩后会触发 Gatekeeper 警告且无法运行）
-# Windows / Linux 开启（PyInstaller 会自动下载 UPX）
-_use_upx = not _is_macos
+# strip: Windows 必须关闭。
+# PyInstaller 6.x 会把 strip 应用到打包内的 DLL（python312.dll、Qt 插件等），
+# 而 CI runner 上的 strip 来自 MinGW/MSYS，处理 PE 文件会把它们破坏，
+# 运行时表现就是 "Failed to load Python DLL ... 内存位置无效"。
+_strip = not _is_windows
+
+# UPX: 一律关闭。
+# 被 UPX 压缩的 python DLL / Qt 插件极易触发杀软误报和加载失败，
+# 且 PyInstaller 只在 UPX 存在时才真正压缩，结果不可预期，干脆关掉。
+_use_upx = False
 
 # ---------- 构建 ----------
 a = Analysis(
@@ -100,8 +107,8 @@ exe = EXE(
     name="Lyrica",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,              # strip 掉符号表，体积 -30%~50%
-    upx=_use_upx,            # macOS=False 避免 Gatekeeper，Windows/Linux=True
+    strip=_strip,            # Windows=False（见上方说明），Linux/macOS 保留
+    upx=_use_upx,            # 三端均为 False
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,           # 无控制台窗口；macOS/Linux 无害保留
