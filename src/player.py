@@ -309,12 +309,26 @@ class MusicPlayer(QObject):
         if 0 <= self._active_group_index < len(self._groups):
             self.play_track_in_group(self._active_group_index, 0)
 
-    # ==================== 元数据查询（v1.0 新增） ====================
+    # ==================== 元数据查询（v1.0 新增，v1.1 加 mtime TTL） ====================
 
     def get_track_metadata(self, file_path: str) -> Dict[str, Optional[str]]:
-        """获取音频文件元数据（带缓存）。返回 {title, artist, album, duration}"""
-        if file_path in self._meta_cache:
-            return self._meta_cache[file_path]
+        """获取音频文件元数据（带缓存 + 文件 mtime 校验）。
+        若缓存有 _mtime 且当前文件 mtime 不匹配，说明标签被重新打过，自动重读。
+        若缓存无 _mtime（向后兼容旧版本），直接信任缓存。"""
+        cached = self._meta_cache.get(file_path)
+        if cached is not None:
+            cached_mtime = cached.get("_mtime")
+            # 没有 _mtime → 旧缓存条目，直接信任（不触发重读）
+            if cached_mtime is None:
+                return {k: v for k, v in cached.items() if not k.startswith("_")}
+            # 有 _mtime → 校验是否匹配
+            try:
+                current_mtime = os.path.getmtime(file_path)
+                if abs(current_mtime - cached_mtime) < 1.0:
+                    return {k: v for k, v in cached.items() if not k.startswith("_")}
+            except OSError:
+                pass
+            # mtime 不匹配或无法获取 → 重读
 
         result: Dict[str, Optional[str]] = {
             "title": None, "artist": None, "album": None, "duration": None,
@@ -329,15 +343,26 @@ class MusicPlayer(QObject):
         except Exception:
             pass
 
+        # 缓存 + 记录当前 mtime（用于下次 TTL 校验）
+        try:
+            result["_mtime"] = os.path.getmtime(file_path)
+        except OSError:
+            pass
         self._meta_cache[file_path] = result
-        return result
+        return {k: v for k, v in result.items() if not k.startswith("_")}
 
     def preload_metadata(self, meta_cache: Dict[str, Dict[str, Optional[str]]]):
-        """v1.0.2 优化2: 批量预填 metadata 缓存（由 ScanWorker 后台扫描完成）"""
-        # 只填本 player 还没有的，不覆盖已有
+        """批量预填 metadata 缓存（由 ScanWorker 后台扫描完成）。
+        对缺失 _mtime 的旧缓存条目自动补 mtime，保证 TTL 校验链路完整。"""
         for path, meta in meta_cache.items():
             if path not in self._meta_cache:
-                self._meta_cache[path] = meta
+                entry = dict(meta)  # 拷贝，避免修改调用方 dict
+                if "_mtime" not in entry:
+                    try:
+                        entry["_mtime"] = os.path.getmtime(path)
+                    except OSError:
+                        pass
+                self._meta_cache[path] = entry
 
     def get_current_track_metadata(self) -> Dict[str, Optional[str]]:
         if 0 <= self._current_index < len(self._playlist):

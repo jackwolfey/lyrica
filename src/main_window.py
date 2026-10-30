@@ -10,7 +10,7 @@ import sys
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Slot, QThread, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QPen
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QPen, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
@@ -66,12 +66,19 @@ class ScanWorker(QThread):
                     if ext in (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".opus"):
                         all_paths.append(os.path.join(root, fname))
 
-            # Step 2: 已缓存的直接复用，跳过 TinyTag
+            # Step 2: 已缓存的直接复用，跳过 TinyTag；同时确保 _mtime 存在
             meta_cache: dict = {}
             need_read: list = []
             for p in all_paths:
                 if p in self._existing:
-                    meta_cache[p] = self._existing[p]
+                    # 拷贝 + 补 _mtime（老版本持久化恢复的缓存可能缺 _mtime）
+                    entry = dict(self._existing[p])
+                    if "_mtime" not in entry:
+                        try:
+                            entry["_mtime"] = os.path.getmtime(p)
+                        except OSError:
+                            pass
+                    meta_cache[p] = entry
                 else:
                     need_read.append(p)
 
@@ -80,12 +87,17 @@ class ScanWorker(QThread):
                 def _read_one(p):
                     try:
                         tag = TinyTag.get(p)
-                        return p, {
+                        entry = {
                             "title": tag.title,
                             "artist": tag.artist,
                             "album": tag.album,
                             "duration": f"{tag.duration:.1f}" if tag.duration is not None else None,
                         }
+                        try:
+                            entry["_mtime"] = os.path.getmtime(p)
+                        except OSError:
+                            pass
+                        return p, entry
                     except Exception:
                         return p, {"title": None, "artist": None, "album": None, "duration": None}
 
@@ -370,6 +382,34 @@ class MainWindow(QMainWindow):
         self.player.volume_changed.connect(self._on_volume_external)
         self.player.play_mode_changed.connect(self._on_play_mode_external)
         self.player.error_occurred.connect(self._on_error)
+
+        # v1.1: 全局快捷键（窗口焦点内生效）
+        QShortcut(QKeySequence(Qt.Key_Space), self, activated=self.player.toggle_play_pause)
+        QShortcut(QKeySequence(Qt.Key_Left),   self, activated=self._seek_backward)
+        QShortcut(QKeySequence(Qt.Key_Right),  self, activated=self._seek_forward)
+        QShortcut(QKeySequence(Qt.Key_Up),     self, activated=self._volume_up)
+        QShortcut(QKeySequence(Qt.Key_Down),   self, activated=self._volume_down)
+        # 切歌备选（避免某些键盘上方向键布局导致冲突）
+        QShortcut(QKeySequence(Qt.Key_Comma),  self, activated=self.player.prev_track)
+        QShortcut(QKeySequence(Qt.Key_Period), self, activated=self.player.next_track)
+
+    # ==================== 全局快捷键辅助槽（v1.1 新增） ====================
+
+    @Slot()
+    def _seek_backward(self):
+        self.player.seek(max(0.0, self.player.get_current_position() - 5))
+
+    @Slot()
+    def _seek_forward(self):
+        self.player.seek(min(self.player.get_duration(), self.player.get_current_position() + 5))
+
+    @Slot()
+    def _volume_up(self):
+        self.player.set_volume(min(1.0, self.player.get_volume() + 0.05))
+
+    @Slot()
+    def _volume_down(self):
+        self.player.set_volume(max(0.0, self.player.get_volume() - 0.05))
 
     # ==================== 系统托盘（v1.0 新增） ====================
 

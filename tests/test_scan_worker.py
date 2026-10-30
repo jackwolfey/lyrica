@@ -48,6 +48,11 @@ def test_scan_worker_recurses_and_skips_non_audio(make_tree):
     ])
 
 
+def _strip_meta(meta: dict) -> dict:
+    """去掉 ScanWorker 返回的 _mtime 内部字段，只保留 metadata 内容。"""
+    return {k: v for k, v in meta.items() if not k.startswith("_")}
+
+
 def test_scan_worker_reuses_existing_cache(tmp_path, monkeypatch):
     paths = []
     for name in ("a.mp3", "b.mp3", "c.mp3"):
@@ -70,7 +75,7 @@ def test_scan_worker_reuses_existing_cache(tmp_path, monkeypatch):
 
     _, count, cache = result["ok"][0]
     assert count == 3
-    assert cache[paths[0]] == cached_meta  # 命中缓存，内容原样保留
+    assert _strip_meta(cache[paths[0]]) == cached_meta  # 命中缓存，metadata 内容原样保留
     assert sorted(read) == sorted(paths[1:])
 
 
@@ -82,7 +87,7 @@ def test_scan_worker_formats_duration(tmp_path, monkeypatch):
 
     _, _, cache = result["ok"][0]
     meta = next(iter(cache.values()))
-    assert meta == {"title": "T", "artist": "A", "album": "B", "duration": "12.3"}
+    assert _strip_meta(meta) == {"title": "T", "artist": "A", "album": "B", "duration": "12.3"}
 
 
 def test_scan_worker_handles_unreadable_tags(tmp_path, monkeypatch):
