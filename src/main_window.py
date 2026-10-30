@@ -320,12 +320,23 @@ class MainWindow(QMainWindow):
         self.lbl_title.installEventFilter(self)
         root.addWidget(self.lbl_title)
 
-        # v1.0 新增，v1.1 改造：元数据标签（两行 —— 曲目名 / 艺术家 · 专辑）
-        self.lbl_meta = QLabel("")
-        self.lbl_meta.setAlignment(Qt.AlignCenter)
-        self.lbl_meta.setStyleSheet("color:#a6adc8;")
-        self.lbl_meta.setMinimumHeight(32)  # 两行
-        root.addWidget(self.lbl_meta)
+        # v1.0 新增，v1.1 改造：元数据两行各自独立 marquee
+        self.lbl_meta_title = _MarqueeLabel("")  # 曲目名行
+        self.lbl_meta_title.setAlignment(Qt.AlignCenter)
+        self.lbl_meta_title.setMinimumHeight(14)
+        self.lbl_meta_detail = _MarqueeLabel("")  # 艺术家 · 专辑行
+        self.lbl_meta_detail.setAlignment(Qt.AlignCenter)
+        self.lbl_meta_detail.setStyleSheet("color:#a6adc8;")
+        self.lbl_meta_detail.setMinimumHeight(14)
+        meta_col = QVBoxLayout()
+        meta_col.setContentsMargins(0, 0, 0, 0)
+        meta_col.setSpacing(0)
+        meta_col.addWidget(self.lbl_meta_title)
+        meta_col.addWidget(self.lbl_meta_detail)
+        meta_container = QWidget()
+        meta_container.setLayout(meta_col)
+        meta_container.setMaximumHeight(30)
+        root.addWidget(meta_container)
 
         # ---------- 进度条 + 时间 ----------
         progress_row = QHBoxLayout()
@@ -936,21 +947,17 @@ class MainWindow(QMainWindow):
             name = self.player.get_track_name(flat_index)
             self.lbl_title.setText(f"🎵 {name}")
             self.lbl_title.setToolTip(path)
-            # 元数据（v1.1 改造为两行：曲目名 / 艺术家 · 专辑）
+            # 元数据（v1.1 改造为两个独立 marquee label）
             meta = self.player.get_track_metadata(path)
             track_title = meta.get("title") or ""
             # fallback：用无扩展名的文件名
             if not track_title:
                 track_title = os.path.splitext(os.path.basename(path))[0]
+            self.lbl_meta_title.setText(track_title)
             parts = []
             if meta.get("artist"): parts.append(meta["artist"])
             if meta.get("album"): parts.append(meta["album"])
-            artist_album = " · ".join(parts)
-            # 第二行用稍微小一点的字？先保持同一 QLabel，用 <br>
-            meta_lines = [track_title]
-            if artist_album:
-                meta_lines.append(artist_album)
-            self.lbl_meta.setText("<br>".join(meta_lines))
+            self.lbl_meta_detail.setText(" · ".join(parts) if parts else "")
 
             # 高亮左侧组
             gi = self.player.get_group_of_track(flat_index)
@@ -966,7 +973,8 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_title.setText("未加载曲目")
             self.lbl_title.setToolTip("")
-            self.lbl_meta.setText("")
+            self.lbl_meta_title.setText("")
+            self.lbl_meta_detail.setText("")
 
     @Slot()
     def _refresh_groups_list(self):
@@ -990,7 +998,15 @@ class MainWindow(QMainWindow):
         self.tracks_list.clear()
         if 0 <= gi:
             tracks = self.player.get_group_tracks(gi)
-            self.tracks_list.addItems([os.path.basename(t) for t in tracks])
+            # 每行用 _MarqueeLabel 作为 widget，超长自动横向滚动
+            for t in tracks:
+                row = QListWidgetItem(self.tracks_list)
+                row.setData(Qt.UserRole, t)  # 存完整路径
+                label = _MarqueeLabel(os.path.basename(t))
+                label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+                label.setContentsMargins(4, 0, 4, 0)
+                self.tracks_list.addItem(row)
+                self.tracks_list.setItemWidget(row, label)
             self.lbl_tracks_header.setText(f"🎵 {len(tracks)} 首")
 
             # 仅在真正有已加载曲目时恢复高亮

@@ -192,7 +192,8 @@ def test_settings_path_when_frozen(monkeypatch):
 
 def test_initial_state(window):
     assert window.lbl_title.text() == "未加载曲目"
-    assert window.lbl_meta.text() == ""
+    assert window.lbl_meta_title.text() == ""
+    assert window.lbl_meta_detail.text() == ""
     assert window._tray is None  # 离屏环境无托盘
     assert window.player.get_group_count() == 0
     assert window.slider_volume.value() == 70
@@ -256,19 +257,22 @@ def test_on_track_changed_updates_labels_and_highlight(window, tmp_path):
 
     assert "a.mp3" in window.lbl_title.text()
     assert window.lbl_title.toolTip() == paths[0]
-    assert window.lbl_meta.text() == "Song A<br>Alice · Demo"
+    assert window.lbl_meta_title.text() == "Song A"
+    assert window.lbl_meta_detail.text() == "Alice · Demo"
     assert window.groups_list.currentRow() == 0
     assert window.tracks_list.currentRow() == 0
 
 
 def test_on_track_changed_with_invalid_index_resets_labels(window):
     window.lbl_title.setText("something")
-    window.lbl_meta.setText("something")
+    window.lbl_meta_title.setText("something")
+    window.lbl_meta_detail.setText("something")
 
     window.player.track_changed.emit(-1)
 
     assert window.lbl_title.text() == "未加载曲目"
-    assert window.lbl_meta.text() == ""
+    assert window.lbl_meta_title.text() == ""
+    assert window.lbl_meta_detail.text() == ""
 
 
 # ==================== 播放信号槽 ====================
