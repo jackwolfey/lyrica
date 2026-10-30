@@ -2,7 +2,7 @@
 
 > 轻量级本地音乐播放器 · Python + PySide6 + just_playback
 > 
-> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → **v1.0.4**
+> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → v1.0.4 → **v1.0.5**
 
 ---
 
@@ -138,7 +138,7 @@ Step 3: need_read 的 → ThreadPoolExecutor(max_workers=8) 并行读
 
 ```json
 {
-  "version": "1.0.4",
+  "version": "1.0.5",
   "play_mode": "LIST_LOOP",
   "volume": 0.7,
   "window_size": {"w": 800, "h": 500},
@@ -227,7 +227,7 @@ QApplication 启动
 - **强制退出**：标题右键菜单「退出」+ Ctrl+Q，绕过最小化到托盘开关
 - 托盘通知缩短为 800ms
 
-### v1.0.4（当前）
+### v1.0.4
 > 视图跳转修复 + 列表视觉收敛
 - **组上移/下移不再跳转视图**：`_swap_groups` 末尾移除 `track_changed.emit` —— 组移动是结构性变更，不是切歌，不应触发"高亮播放组/播放曲目"的切歌语义 UI 动作
 - **曲目排序同理**：`sort_group_tracks` 末尾移除 `track_changed.emit`
@@ -237,6 +237,16 @@ QApplication 启动
 - **列表紧凑化**：item `padding` 4→2、垂直 `margin` 归零，同高度可视行数 +4~6
 - **滑块手柄改白**：`QSlider::handle:horizontal` 从 `#f5c2e7` 改为 `#ffffff`（进度条与音量条共用）
 - **播放组文字贴左**：移除 `_refresh_groups_list` 里的两个前导空格，QSS 左侧 padding 6→3
+
+### v1.0.5（当前）
+> 布局解耦 + UI 细节打磨 + 文档完善
+- **控制栏彻底居中**：底部控制区从 `QHBoxLayout` 重构为 `QGridLayout`。将左（模式选择）、中（播放控制）、右（音量）分别放入同一个 Grid 的 `(0,0)` 格子并通过 `Qt.Align` 独立对齐。彻底解决了左侧下拉框宽度变化导致中间播放按钮偏移的问题。
+- **下拉框自适应宽度**：`cmb_mode` 移除硬编码的 `120px`，改为根据 `fontMetrics().horizontalAdvance()` 动态计算最长文本宽度，视觉更紧凑。
+- **列表长文本防溢出**：`groups_list` 和 `tracks_list` 设置 `ScrollBarAlwaysOff` 和 `ElideRight`，防止文件名过长出现横向滚动条破坏 UI。
+- **关于对话框升级**：增加项目 GitHub 主页链接展示。
+- **代码风格全面规范化**：清理了全项目约 50 处使用分号 `;` 连接的多语句单行代码，重构为标准换行，大幅提升代码可读性。
+- **README 补全**：新增详细的「🎮 使用说明」章节，涵盖添加歌曲、播放控制、托盘驻留及状态保存机制。
+- **版本管理**：清理了 `main.py` 中硬编码的版本号，统一由 `main_window.py` 的 `APP_VERSION` 控制。
 
 ---
 

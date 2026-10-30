@@ -15,14 +15,13 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QSlider, QSplitter, QSystemTrayIcon,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QGridLayout
 )
 
 from .player import PlayMode, MusicPlayer
 
-
 APP_NAME = "Lyrica"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 SETTINGS_FILENAME = "lyrica_settings.json"
 
 
@@ -46,7 +45,7 @@ def format_time(seconds: float) -> str:
 class ScanWorker(QThread):
     """递归扫描文件夹，并行预读 metadata。
     v1.0.3 优化：接受已有 meta_cache → 跳过已缓存文件；ThreadPoolExecutor 并行读 IO。"""
-    finished_ok = Signal(str, int, dict)   # folder_path, total_audio_count, meta_cache
+    finished_ok = Signal(str, int, dict)  # folder_path, total_audio_count, meta_cache
     failed = Signal(str)
 
     def __init__(self, folder_path: str, existing_meta_cache: dict = None, parent=None):
@@ -111,24 +110,41 @@ class AboutDialog(QDialog):
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 16); layout.setSpacing(10)
+        layout.setContentsMargins(24, 20, 24, 16)
+        layout.setSpacing(10)
 
         title = QLabel(f"🎵 {APP_NAME}")
-        f = title.font(); f.setPointSize(16); f.setBold(True)
-        title.setFont(f); title.setAlignment(Qt.AlignCenter)
+        f = title.font()
+        f.setPointSize(16)
+        f.setBold(True)
+        title.setFont(f)
+        title.setAlignment(Qt.AlignCenter)
 
         ver = QLabel(f"版本 {APP_VERSION}")
-        ver.setAlignment(Qt.AlignCenter); ver.setStyleSheet("color:#a6adc8;")
+        ver.setAlignment(Qt.AlignCenter)
+        ver.setStyleSheet("color:#a6adc8;")
 
-        desc = QLabel("轻量级本地音乐播放器\n基于 Python + just_playback + PySide6")
-        desc.setAlignment(Qt.AlignCenter); desc.setWordWrap(True)
+        desc = QLabel(
+            "轻量级本地音乐播放器\n基于 Python + just_playback + PySide6\nhttps://github.com/jackwolfey/lyrica")
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setWordWrap(True)
 
-        sep = QFrame(); sep.setFrameShape(QFrame.HLine); sep.setStyleSheet("color:#45475a;")
-        close_btn = QPushButton("✕ 关闭"); close_btn.setFixedWidth(90); close_btn.clicked.connect(self.accept)
-        btn_row = QHBoxLayout(); btn_row.addStretch(); btn_row.addWidget(close_btn); btn_row.addStretch()
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color:#45475a;")
+        close_btn = QPushButton("✕ 关闭")
+        close_btn.setFixedWidth(90)
+        close_btn.clicked.connect(self.accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        btn_row.addStretch()
 
-        layout.addWidget(title); layout.addWidget(ver); layout.addSpacing(6)
-        layout.addWidget(desc); layout.addSpacing(6)
+        layout.addWidget(title)
+        layout.addWidget(ver)
+        layout.addSpacing(6)
+        layout.addWidget(desc)
+        layout.addSpacing(6)
         layout.addWidget(sep)
         layout.addLayout(btn_row)
 
@@ -147,8 +163,8 @@ class MainWindow(QMainWindow):
         self._seeking: bool = False
 
         # 配置项
-        self._minimize_to_tray: bool = False   # 最小化到托盘开关
-        self._force_quit: bool = False        # v1.0.3: 强制退出标志（绕过托盘拦截）
+        self._minimize_to_tray: bool = False  # 最小化到托盘开关
+        self._force_quit: bool = False  # v1.0.3: 强制退出标志（绕过托盘拦截）
 
         # 系统托盘（可选）
         self._tray: Optional[QSystemTrayIcon] = None
@@ -165,12 +181,15 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         root = QVBoxLayout(central)
-        root.setContentsMargins(10, 8, 10, 8); root.setSpacing(6)
+        root.setContentsMargins(10, 8, 10, 8)
+        root.setSpacing(6)
 
         # ---------- 顶部：歌曲信息 + 元数据 ----------
         self.lbl_title = QLabel("未加载曲目")
         self.lbl_title.setAlignment(Qt.AlignCenter)
-        font = self.lbl_title.font(); font.setPointSize(13); font.setBold(True)
+        font = self.lbl_title.font()
+        font.setPointSize(13)
+        font.setBold(True)
         self.lbl_title.setFont(font)
         self.lbl_title.setWordWrap(True)
         self.lbl_title.setMinimumHeight(24)
@@ -188,64 +207,96 @@ class MainWindow(QMainWindow):
         # ---------- 进度条 + 时间 ----------
         progress_row = QHBoxLayout()
         progress_row.setSpacing(6)
-        self.lbl_current = QLabel("00:00"); self.lbl_current.setFixedWidth(40); self.lbl_current.setAlignment(Qt.AlignCenter)
+        self.lbl_current = QLabel("00:00")
+        self.lbl_current.setFixedWidth(40)
+        self.lbl_current.setAlignment(Qt.AlignCenter)
         self.slider_progress = QSlider(Qt.Horizontal)
-        self.slider_progress.setRange(0, 1000); self.slider_progress.setValue(0)
-        self.lbl_total = QLabel("00:00"); self.lbl_total.setFixedWidth(40); self.lbl_total.setAlignment(Qt.AlignCenter)
-        progress_row.addWidget(self.lbl_current); progress_row.addWidget(self.slider_progress, 1); progress_row.addWidget(self.lbl_total)
+        self.slider_progress.setRange(0, 1000)
+        self.slider_progress.setValue(0)
+        self.lbl_total = QLabel("00:00")
+        self.lbl_total.setFixedWidth(40)
+        self.lbl_total.setAlignment(Qt.AlignCenter)
+        progress_row.addWidget(self.lbl_current)
+        progress_row.addWidget(self.slider_progress, 1)
+        progress_row.addWidget(self.lbl_total)
         root.addLayout(progress_row)
 
         # ---------- 紧凑控制按钮区 ----------
         # 三段式：左 = 播放模式（锚左） | 中 = ⏮ ▶ ⏭ 窗口居中 | 右 = 🔊 音量（锚右）
-        ctrl_row = QHBoxLayout()
-        ctrl_row.setSpacing(0); ctrl_row.setContentsMargins(0, 0, 0, 0)
-
         self.cmb_mode = QComboBox()
         for mode in PlayMode:
             self.cmb_mode.addItem(mode.value, mode)
-        # 固定宽 120px，与右侧 🔊 label(13px)+slider(100px)+间距(4px) ≈ 117px 对齐，
-        # 这样 center_section 的左右锚点宽度一致，⏮▶⏭ 才能真正居中于窗口
-        self.cmb_mode.setFixedWidth(120); self.cmb_mode.setFixedHeight(26)
+        # 宽度收窄到恰好容纳最长文本（四个汉字）：文本宽 + 左右 padding 各 6px + 边框各 1px
+        _fm = self.cmb_mode.fontMetrics()
+        _text_w = max(_fm.horizontalAdvance(m.value) for m in PlayMode)
+        self.cmb_mode.setFixedWidth(_text_w + 6 * 2 + 1 * 2)
+        self.cmb_mode.setFixedHeight(26)
 
-        self.btn_prev = QPushButton("⏮\uFE0F"); self.btn_prev.setFixedSize(32, 26)
-        self.btn_play = QPushButton("▶\uFE0F");  self.btn_play.setFixedSize(50, 26); self.btn_play.setDefault(True)
-        self.btn_next = QPushButton("⏭\uFE0F"); self.btn_next.setFixedSize(32, 26)
+        self.btn_prev = QPushButton("⏮\uFE0F")
+        self.btn_prev.setFixedSize(32, 26)
+        self.btn_play = QPushButton("▶\uFE0F")
+        self.btn_play.setFixedSize(50, 26)
+        self.btn_play.setDefault(True)
+        self.btn_next = QPushButton("⏭\uFE0F")
+        self.btn_next.setFixedSize(32, 26)
 
         # 左段：锚左
         left_section = QHBoxLayout()
-        left_section.setSpacing(4); left_section.setContentsMargins(0, 0, 0, 0)
+        left_section.setSpacing(4)
+        left_section.setContentsMargins(0, 0, 0, 0)
         left_section.addWidget(self.cmb_mode)
 
-        # 中段：按钮组在窗口中水平居中（两侧 equal stretch）
+        # 中段：紧凑按钮组，不再自带 stretch
         center_section = QHBoxLayout()
-        center_section.setSpacing(4); center_section.setContentsMargins(0, 0, 0, 0)
-        center_section.addStretch(1)
+        center_section.setSpacing(4)
+        center_section.setContentsMargins(0, 0, 0, 0)
         center_section.addWidget(self.btn_prev)
         center_section.addWidget(self.btn_play)
         center_section.addWidget(self.btn_next)
-        center_section.addStretch(1)
 
         # 右段：锚右
         right_section = QHBoxLayout()
-        right_section.setSpacing(4); right_section.setContentsMargins(0, 0, 0, 0)
+        right_section.setSpacing(4);
+        right_section.setContentsMargins(0, 0, 0, 0)
         right_section.addWidget(QLabel("🔊"))
         self.slider_volume = QSlider(Qt.Horizontal)
-        self.slider_volume.setRange(0, 100); self.slider_volume.setValue(70)
-        self.slider_volume.setFixedWidth(100); self.slider_volume.setFixedHeight(18)
+        self.slider_volume.setRange(0, 100)
+        self.slider_volume.setValue(70)
+        self.slider_volume.setFixedWidth(100)
+        self.slider_volume.setFixedHeight(18)
         right_section.addWidget(self.slider_volume)
 
-        ctrl_row.addLayout(left_section)
-        ctrl_row.addLayout(center_section, 1)   # stretch=1 让中段填满剩余空间
-        ctrl_row.addLayout(right_section)
+        # 用 QGridLayout 把三段叠在同一格，各自按 alignment 贴左/居中/贴右。
+        # 中段相对整格（= 窗口内容宽度）居中，与左右段宽度无关，
+        # 所以左侧下拉框收窄、右侧音量段宽度变化都不会再影响 ⏮▶⏭ 的居中。
+        ctrl_container = QWidget()
+        ctrl_grid = QGridLayout(ctrl_container)
+        ctrl_grid.setContentsMargins(0, 0, 0, 0)
+        ctrl_grid.setSpacing(0)
+        ctrl_grid.setColumnStretch(0, 1)
 
-        root.addLayout(ctrl_row)
+        left_widget = QWidget()
+        left_widget.setLayout(left_section)
+        center_widget = QWidget()
+        center_widget.setLayout(center_section)
+        right_widget = QWidget()
+        right_widget.setLayout(right_section)
+
+        ctrl_grid.addWidget(left_widget, 0, 0, alignment=Qt.AlignLeft | Qt.AlignVCenter)
+        ctrl_grid.addWidget(center_widget, 0, 0, alignment=Qt.AlignCenter)
+        ctrl_grid.addWidget(right_widget, 0, 0, alignment=Qt.AlignRight | Qt.AlignVCenter)
+
+        root.addWidget(ctrl_container)
 
         # ---------- 核心：左右双面板 ----------
         splitter = QSplitter(Qt.Horizontal)
 
         groups_title = QLabel("📁 播放组")
-        gf = groups_title.font(); gf.setBold(True); gf.setPointSize(9)
-        groups_title.setFont(gf); groups_title.setStyleSheet("color:#a6adc8; padding: 2px;")
+        gf = groups_title.font()
+        gf.setBold(True)
+        gf.setPointSize(9)
+        groups_title.setFont(gf)
+        groups_title.setStyleSheet("color:#a6adc8; padding: 2px;")
 
         self.groups_list = QListWidget()
         self.groups_list.setAlternatingRowColors(True)
@@ -254,14 +305,20 @@ class MainWindow(QMainWindow):
         self.groups_list.customContextMenuRequested.connect(self._show_groups_menu)
         self.groups_list.currentRowChanged.connect(self._on_group_selected)
 
-        left_container = QFrame(); left_container.setObjectName("leftPanel")
+        left_container = QFrame()
+        left_container.setObjectName("leftPanel")
         left_layout = QVBoxLayout(left_container)
-        left_layout.setContentsMargins(4, 4, 4, 4); left_layout.setSpacing(2)
-        left_layout.addWidget(groups_title); left_layout.addWidget(self.groups_list)
+        left_layout.setContentsMargins(4, 4, 4, 4)
+        left_layout.setSpacing(2)
+        left_layout.addWidget(groups_title)
+        left_layout.addWidget(self.groups_list)
 
         self.lbl_tracks_header = QLabel("🎵 曲目")
-        tf = self.lbl_tracks_header.font(); tf.setBold(True); tf.setPointSize(9)
-        self.lbl_tracks_header.setFont(tf); self.lbl_tracks_header.setStyleSheet("color:#a6adc8; padding: 2px;")
+        tf = self.lbl_tracks_header.font()
+        tf.setBold(True)
+        tf.setPointSize(9)
+        self.lbl_tracks_header.setFont(tf)
+        self.lbl_tracks_header.setStyleSheet("color:#a6adc8; padding: 2px;")
 
         self.tracks_list = QListWidget()
         self.tracks_list.setAlternatingRowColors(True)
@@ -270,14 +327,24 @@ class MainWindow(QMainWindow):
         self.tracks_list.customContextMenuRequested.connect(self._show_tracks_menu)
         self.tracks_list.itemDoubleClicked.connect(self._on_track_double_clicked)
 
-        right_container = QFrame(); right_container.setObjectName("rightPanel")
-        right_layout = QVBoxLayout(right_container)
-        right_layout.setContentsMargins(4, 4, 4, 4); right_layout.setSpacing(2)
-        right_layout.addWidget(self.lbl_tracks_header); right_layout.addWidget(self.tracks_list)
+        for lst in (self.groups_list, self.tracks_list):
+            lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            lst.setTextElideMode(Qt.ElideRight)
 
-        splitter.addWidget(left_container); splitter.addWidget(right_container)
-        splitter.setStretchFactor(0, 1); splitter.setStretchFactor(1, 3)
-        splitter.setSizes([220, 580]); splitter.setChildrenCollapsible(False)
+        right_container = QFrame()
+        right_container.setObjectName("rightPanel")
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(4, 4, 4, 4)
+        right_layout.setSpacing(2)
+        right_layout.addWidget(self.lbl_tracks_header)
+        right_layout.addWidget(self.tracks_list)
+
+        splitter.addWidget(left_container)
+        splitter.addWidget(right_container)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        splitter.setSizes([220, 580])
+        splitter.setChildrenCollapsible(False)
 
         root.addWidget(splitter, 1)
         self.player.set_volume(0.7)
@@ -334,7 +401,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(icon)
 
         self._tray = QSystemTrayIcon(self)
-        self._tray.setIcon(icon)          # 关键修复：必须设置非空图标
+        self._tray.setIcon(icon)  # 关键修复：必须设置非空图标
         self._tray.setToolTip(APP_NAME)
 
         menu = QMenu()
@@ -349,9 +416,13 @@ class MainWindow(QMainWindow):
         act_quit = QAction("退出", self)
         act_quit.triggered.connect(self._tray_quit)
 
-        menu.addAction(act_show); menu.addSeparator()
-        menu.addAction(act_play); menu.addAction(act_next); menu.addAction(act_prev)
-        menu.addSeparator(); menu.addAction(act_quit)
+        menu.addAction(act_show)
+        menu.addSeparator()
+        menu.addAction(act_play)
+        menu.addAction(act_next)
+        menu.addAction(act_prev)
+        menu.addSeparator()
+        menu.addAction(act_quit)
 
         self._tray.setContextMenu(menu)
         self._tray.activated.connect(self._on_tray_activated)
@@ -418,7 +489,9 @@ class MainWindow(QMainWindow):
 
         act_add_folder = QAction("📁 添加文件夹...", self)
         act_add_files = QAction("📄 添加文件...", self)
-        menu.addAction(act_add_folder); menu.addAction(act_add_files); menu.addSeparator()
+        menu.addAction(act_add_folder)
+        menu.addAction(act_add_files)
+        menu.addSeparator()
 
         # v1.0 新增：组排序 / 移动
         gi = self.groups_list.currentRow()
@@ -428,12 +501,15 @@ class MainWindow(QMainWindow):
         act_down.setEnabled(0 <= gi < self.player.get_group_count() - 1)
         act_reset = QAction("🔄 按默认顺序排序", self)
         act_reset.setEnabled(self.player.get_group_count() > 1)
-        menu.addAction(act_up); menu.addAction(act_down); menu.addAction(act_reset)
+        menu.addAction(act_up)
+        menu.addAction(act_down)
+        menu.addAction(act_reset)
         menu.addSeparator()
 
         act_remove_group = QAction("✕ 移除该播放组", self)
         act_remove_group.setEnabled(gi >= 0)
-        menu.addAction(act_remove_group); menu.addSeparator()
+        menu.addAction(act_remove_group)
+        menu.addSeparator()
 
         act_clear = QAction("🗑 清空所有播放组", self)
         act_clear.setEnabled(self.player.get_group_count() > 0)
@@ -464,8 +540,10 @@ class MainWindow(QMainWindow):
         act_sort_album = QAction("按专辑", self)
         for a in (act_sort_name, act_sort_title, act_sort_artist, act_sort_album):
             a.setEnabled(has_group)
-        sort_menu.addAction(act_sort_name); sort_menu.addAction(act_sort_title)
-        sort_menu.addAction(act_sort_artist); sort_menu.addAction(act_sort_album)
+        sort_menu.addAction(act_sort_name)
+        sort_menu.addAction(act_sort_title)
+        sort_menu.addAction(act_sort_artist)
+        sort_menu.addAction(act_sort_album)
         menu.addSeparator()
 
         act_play = QAction("▶\uFE0F 播放", self)
@@ -502,11 +580,15 @@ class MainWindow(QMainWindow):
         dlg.setModal(True)
         layout = QVBoxLayout(dlg)
         lbl = QLabel(f"正在分析文件夹内容...\n{folder}")
-        lbl.setAlignment(Qt.AlignCenter); lbl.setStyleSheet("color:#a6adc8;")
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setStyleSheet("color:#a6adc8;")
         layout.addWidget(lbl)
         btn = QPushButton("✕ 取消")
         btn.clicked.connect(dlg.reject)
-        btn_row = QHBoxLayout(); btn_row.addStretch(); btn_row.addWidget(btn); btn_row.addStretch()
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(btn)
+        btn_row.addStretch()
         layout.addLayout(btn_row)
 
         # v1.0.3: 传入已有 meta_cache → 跳过已缓存文件，避免重复 TinyTag 读
@@ -515,7 +597,8 @@ class MainWindow(QMainWindow):
 
         def on_ok(folder_path: str, count: int, meta_cache: dict):
             if cancel_flag["cancelled"]:
-                worker.deleteLater(); return
+                worker.deleteLater()
+                return
             # v1.0.2 优化2: 把 ScanWorker 预读的 metadata 填入 player 缓存
             self.player.preload_metadata(meta_cache)
             added = self.player.add_folder_recursive(folder_path)
@@ -527,7 +610,8 @@ class MainWindow(QMainWindow):
 
         def on_err(msg: str):
             if cancel_flag["cancelled"]:
-                worker.deleteLater(); return
+                worker.deleteLater()
+                return
             dlg.reject()
             QMessageBox.warning(self, APP_NAME, f"扫描失败：{msg}")
             worker.deleteLater()
@@ -535,7 +619,7 @@ class MainWindow(QMainWindow):
         def on_cancel():
             cancel_flag["cancelled"] = True
 
-        btn.clicked.connect(on_cancel)   # 先标记取消，再 reject dialog
+        btn.clicked.connect(on_cancel)  # 先标记取消，再 reject dialog
         worker.finished_ok.connect(on_ok)
         worker.failed.connect(on_err)
 
@@ -567,7 +651,8 @@ class MainWindow(QMainWindow):
         if isinstance(mode, PlayMode): self.player.set_play_mode(mode)
 
     @Slot()
-    def _on_seek_start(self): self._seeking = True
+    def _on_seek_start(self):
+        self._seeking = True
 
     @Slot()
     def _on_seek_end(self):
@@ -577,11 +662,14 @@ class MainWindow(QMainWindow):
         self.player.seek(val * duration)
 
     @Slot(int)
-    def _on_volume_changed(self, value: int): self.player.set_volume(value / 100.0)
+    def _on_volume_changed(self, value: int):
+        self.player.set_volume(value / 100.0)
 
     @Slot(str)
     def _on_volume_external(self, vol: float):
-        self.slider_volume.blockSignals(True); self.slider_volume.setValue(int(vol * 100)); self.slider_volume.blockSignals(False)
+        self.slider_volume.blockSignals(True)
+        self.slider_volume.setValue(int(vol * 100))
+        self.slider_volume.blockSignals(False)
 
     @Slot(object)
     def _on_play_mode_external(self, mode: PlayMode):
@@ -598,7 +686,9 @@ class MainWindow(QMainWindow):
     @Slot(int)
     def _on_active_group_external(self, group_index: int):
         if group_index >= 0:
-            self.groups_list.blockSignals(True); self.groups_list.setCurrentRow(group_index); self.groups_list.blockSignals(False)
+            self.groups_list.blockSignals(True)
+            self.groups_list.setCurrentRow(group_index)
+            self.groups_list.blockSignals(False)
         self._refresh_tracks_list()
 
     @Slot(QListWidgetItem)
@@ -612,14 +702,19 @@ class MainWindow(QMainWindow):
 
     @Slot(float)
     def _on_position_changed(self, pos: float):
-        if self._seeking: self.lbl_current.setText(format_time(pos)); return
+        if self._seeking:
+            self.lbl_current.setText(format_time(pos))
+            return
         duration = self.player.get_duration()
         if duration > 0:
-            self.slider_progress.blockSignals(True); self.slider_progress.setValue(int(min(pos / duration, 1.0) * 1000)); self.slider_progress.blockSignals(False)
+            self.slider_progress.blockSignals(True)
+            self.slider_progress.setValue(int(min(pos / duration, 1.0) * 1000))
+            self.slider_progress.blockSignals(False)
         self.lbl_current.setText(format_time(pos))
 
     @Slot(float)
-    def _on_duration_changed(self, duration: float): self.lbl_total.setText(format_time(duration))
+    def _on_duration_changed(self, duration: float):
+        self.lbl_total.setText(format_time(duration))
 
     @Slot(bool)
     def _on_state_changed(self, playing: bool):
@@ -645,22 +740,30 @@ class MainWindow(QMainWindow):
             gi = self.player.get_group_of_track(flat_index)
             ti = self.player.get_track_index_in_group(flat_index)
             if gi >= 0:
-                self.groups_list.blockSignals(True); self.groups_list.setCurrentRow(gi); self.groups_list.blockSignals(False)
+                self.groups_list.blockSignals(True)
+                self.groups_list.setCurrentRow(gi)
+                self.groups_list.blockSignals(False)
             if 0 <= ti < self.tracks_list.count():
-                self.tracks_list.blockSignals(True); self.tracks_list.setCurrentRow(ti); self.tracks_list.blockSignals(False)
+                self.tracks_list.blockSignals(True)
+                self.tracks_list.setCurrentRow(ti)
+                self.tracks_list.blockSignals(False)
         else:
-            self.lbl_title.setText("未加载曲目"); self.lbl_title.setToolTip("")
+            self.lbl_title.setText("未加载曲目")
+            self.lbl_title.setToolTip("")
             self.lbl_meta.setText("")
 
     @Slot()
     def _refresh_groups_list(self):
         # v1.0.2 优化1: 冻结 repaint + 批量 addItems，避免 N 次 layout
-        self.groups_list.blockSignals(True); self.groups_list.setUpdatesEnabled(False); self.groups_list.clear()
+        self.groups_list.blockSignals(True)
+        self.groups_list.setUpdatesEnabled(False)
+        self.groups_list.clear()
         names = [self.player.get_group_name(i) for i in range(self.player.get_group_count())]
         self.groups_list.addItems(names)
         cur = self.player.get_active_group_index()
         if 0 <= cur < self.groups_list.count(): self.groups_list.setCurrentRow(cur)
-        self.groups_list.setUpdatesEnabled(True); self.groups_list.blockSignals(False)
+        self.groups_list.setUpdatesEnabled(True)
+        self.groups_list.blockSignals(False)
         self._refresh_tracks_list()
 
     @Slot()
@@ -687,7 +790,8 @@ class MainWindow(QMainWindow):
         self.tracks_list.blockSignals(False)
 
     @Slot(str)
-    def _on_error(self, msg: str): QMessageBox.warning(self, APP_NAME, msg)
+    def _on_error(self, msg: str):
+        QMessageBox.warning(self, APP_NAME, msg)
 
     # ==================== 关闭时持久化 ====================
 
@@ -747,7 +851,8 @@ class MainWindow(QMainWindow):
         # 窗口大小
         ws = data.get("window_size")
         if isinstance(ws, dict):
-            w = int(ws.get("w", 0)); h = int(ws.get("h", 0))
+            w = int(ws.get("w", 0))
+            h = int(ws.get("h", 0))
             if w >= 400 and h >= 300: self.resize(QSize(w, h))
 
         # v1.0：最小化到托盘开关
@@ -761,15 +866,21 @@ class MainWindow(QMainWindow):
             restored = count > 0
         if not restored:
             legacy = [p for p in data.get("playlist", []) if os.path.isfile(p)]
-            if legacy: self.player.add_files(legacy); restored = True
+            if legacy:
+                self.player.add_files(legacy)
+                restored = True
 
         if restored:
             agi = int(data.get("active_group_index", 0))
-            if 0 <= agi < self.player.get_group_count(): self.player.set_active_group(agi)
+            if 0 <= agi < self.player.get_group_count():
+                self.player.set_active_group(agi)
             idx = int(data.get("current_index", 0))
-            if 0 <= idx < self.player.get_track_count(): self.player._current_index = idx
-            self._refresh_groups_list(); self._refresh_tracks_list()
-            if 0 <= self.player.get_current_index(): self.player.track_changed.emit(self.player.get_current_index())
+            if 0 <= idx < self.player.get_track_count():
+                self.player._current_index = idx
+            self._refresh_groups_list()
+            self._refresh_tracks_list()
+            if 0 <= self.player.get_current_index():
+                self.player.track_changed.emit(self.player.get_current_index())
 
             # v1.0.1：恢复上次暂停的播放位置
             saved_pos = float(data.get("position", 0.0))
@@ -782,6 +893,8 @@ class MainWindow(QMainWindow):
             self.player._meta_cache = saved_meta
 
         mode_name = data.get("play_mode", "SEQUENCE")
-        try: self.player.set_play_mode(PlayMode[mode_name])
-        except KeyError: pass
+        try:
+            self.player.set_play_mode(PlayMode[mode_name])
+        except KeyError:
+            pass
         self.player.set_volume(float(data.get("volume", 0.7)))

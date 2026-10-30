@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Lyrica v1.0.4 — 轻量级本地音乐播放器
+Lyrica — 轻量级本地音乐播放器
 基于 Python + just_playback + PySide6
 """
 

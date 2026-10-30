@@ -9,6 +9,7 @@ Lyrica PyInstaller spec — 单文件、最小化体积
     lyrica_settings.json 自动保存在 exe 同目录（main_window.settings_path 已处理 sys.frozen）
 """
 
+import os
 import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
@@ -101,5 +102,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,               # ← 有 .ico 的话填 "resources/lyrica.ico"
+    icon=_icon,
 )
