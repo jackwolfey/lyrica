@@ -131,7 +131,7 @@ class _MarqueeLabel(QLabel):
 
 
 APP_NAME = "Lyrica"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 SETTINGS_FILENAME = "lyrica_settings.json"
 
 

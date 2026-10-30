@@ -2,7 +2,7 @@
 
 > 轻量级本地音乐播放器 · Python + PySide6 + just_playback
 > 
-> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → v1.0.4 → v1.0.5 → **v1.1.0**
+> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → v1.0.4 → v1.0.5 → v1.1.0 → **v1.1.1**
 
 ---
 
@@ -139,7 +139,7 @@ Step 3: need_read 的 → ThreadPoolExecutor(max_workers=8) 并行读
 
 ```json
 {
-  "version": "1.1.0",
+  "version": "1.1.1",
   "play_mode": "LIST_LOOP",
   "volume": 0.7,
   "window_size": {"w": 800, "h": 500},
@@ -249,7 +249,7 @@ QApplication 启动
 - **README 补全**：新增详细的「🎮 使用说明」章节，涵盖添加歌曲、播放控制、托盘驻留及状态保存机制。
 - **版本管理**：清理了 `main.py` 中硬编码的版本号，统一由 `main_window.py` 的 `APP_VERSION` 控制。
 
-### v1.1.0（当前）
+### v1.1.0
 > 播放范围语义重构 + 元数据 TTL + 快捷键 + 视觉定位 + 跨平台自动发布
 - **播放模式拆为五种**：`SEQUENCE`（组内顺序）/ `LIST_LOOP`（组内循环）/ `CROSS_SEQUENCE`（跨组顺序）/ `CROSS_LIST_LOOP`（跨组循环）/ `SINGLE_LOOP`（单曲循环）。新增 `_is_cross_mode()` 与 `_get_play_range()`，上一曲/下一曲/自动续播统一按当前模式的播放范围判断，修正了此前"组内模式实际作用于全曲库"的语义错位
 - **meta_cache TTL**：缓存条目记录文件 `mtime`，查询时比对；文件被重新打标签（mtime 变化）自动重读 TinyTag，旧缓存条目（无 `_mtime`）自动补齐，保证失效链路完整
@@ -260,6 +260,13 @@ QApplication 启动
 - **扩展名来源收敛**：音频格式以 `just_playback.SUPPORTED_AUDIO_FORMATS`（1.0.0 起公开）为唯一来源，经格式名→扩展名映射得到 `.mp3 .wav .flac .ogg .opus`；扫描与播放过滤共用 `SUPPORTED_EXTENSIONS`，不再收录后端无法解码的 `.m4a .aac .wma`
 - **依赖收紧**：`just_playback` 固定为 `== 1.0.0`，Python 最低版本提升到 3.9
 - **跨平台构建 + 自动发布**：`Lyrica.spec` 适配 Windows / macOS / Linux（macOS 生成 `.app` 且关闭 UPX），新增 tag 触发的 GitHub Actions 流水线，三端产物并行打包并自动创建 Release
+
+### v1.1.1（当前）
+> Bug 修复：播放组"正在播放"圆角框更新滞后
+- **问题**：切换播放组后，左侧播放组面板的"正在播放"空心圆角框不即时跟随，需滚动/悬停/缩放窗口后才跳到正确位置
+- **成因**：圆角框由 `PlayingItemDelegate.paint()` 现查 `player` 状态绘制，属被动绘制；播放行变化时全项目无任何 `viewport().update()` 主动失效，此前仅依赖 `_on_track_changed` 中 `groups_list.setCurrentRow()` 的选中态副作用触发重绘。当目标行**已是选中行**时（用户先点选组再双击其中曲目，或 `play_track_in_group()` 先 emit `active_group_changed` 已同步选中），`setCurrentRow` 为 no-op，旧行残留 / 新行缺失。右侧曲目面板因 `active_group_changed` 触发整表 `_refresh_tracks_list()` 重建而总能即时刷新，故只有左侧出现滞后
+- **修复**：在 `_connect_signals()` 中把 `track_changed` / `active_group_changed` 直连到两个列表 `viewport().update()`，信号到达即排队重绘并自动合并，千行量级仍是毫秒级开销
+- **回归测试**：新增 `test_playing_marker_viewport_update_on_track_change`，用事件过滤器统计 viewport 收到的 `UpdateRequest`，精确复现"目标行即选中行"场景（修复前收到 0 个重绘请求），测试总数 176 → 178
 
 ---
 
@@ -322,7 +329,7 @@ spec 关键配置：
 
 ```bash
 pip install -r requirements-dev.txt
-QT_QPA_PLATFORM=offscreen python -m pytest            # 176 个用例
+QT_QPA_PLATFORM=offscreen python -m pytest            # 178 个用例
 QT_QPA_PLATFORM=offscreen python -m pytest --cov=src --cov=main   # 覆盖率 ~99%
 ```
 
