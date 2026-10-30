@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget, QGridLayout, QStyledItemDelegate
 )
 
-from .player import PlayMode, MusicPlayer
+from .player import PlayMode, MusicPlayer, SUPPORTED_EXTENSIONS
 
 
 # v1.1: 自定义 delegate —— 给"正在播放"的 item 画一个空心圆角矩形
@@ -171,7 +171,7 @@ class ScanWorker(QThread):
             for root, dirs, files in os.walk(self._folder):
                 for fname in files:
                     ext = os.path.splitext(fname)[1].lower()
-                    if ext in (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".opus"):
+                    if ext in SUPPORTED_EXTENSIONS:
                         all_paths.append(os.path.join(root, fname))
 
             # Step 2: 已缓存的直接复用，跳过 TinyTag；同时确保 _mtime 存在

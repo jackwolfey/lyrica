@@ -21,7 +21,7 @@ def tag(duration=10.0):
     return types.SimpleNamespace(title="T", artist="A", album="B", duration=duration)
 
 
-@pytest.mark.parametrize("name", ["a.mp3", "b.wav", "c.flac", "d.ogg", "e.m4a", "f.aac", "g.wma", "h.opus"])
+@pytest.mark.parametrize("name", ["a.mp3", "b.wav", "c.flac", "d.ogg", "e.opus"])
 def test_scan_worker_supports_each_extension(tmp_path, name):
     path = tmp_path / name
     path.write_bytes(b"")
@@ -33,6 +33,18 @@ def test_scan_worker_supports_each_extension(tmp_path, name):
     assert folder == os.path.abspath(str(tmp_path))
     assert count == 1
     assert list(cache) == [str(path)]
+
+
+@pytest.mark.parametrize("name", ["a.m4a", "b.aac", "c.wma"])
+def test_scan_worker_skips_formats_backend_cannot_play(tmp_path, name):
+    """m4a/aac/wma 不在 just_playback 的支持集合里，扫描阶段就应排除。"""
+    path = tmp_path / name
+    path.write_bytes(b"")
+
+    result = run_worker(ScanWorker(str(tmp_path)))
+
+    assert len(result["ok"]) == 1
+    assert result["ok"][0][1] == 0
 
 
 def test_scan_worker_recurses_and_skips_non_audio(make_tree):

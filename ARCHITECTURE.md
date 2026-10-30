@@ -58,7 +58,7 @@ lyrica/
 | 依赖 | 版本 | 用途 |
 |------|------|------|
 | PySide6 | ≥ 6.5.0 | Qt6 Python 绑定（UI + 信号槽） |
-| just_playback | ≥ 0.1.8 | 音频播放后端（基于 miniaudio C 库，cffi 绑定） |
+| just_playback | == 1.0.0 | 音频播放后端（基于 miniaudio C 库，cffi 绑定；`SUPPORTED_AUDIO_FORMATS` 从此版本起公开） |
 | tinytag | ≥ 1.8.0 | 读取音频文件元数据（标题/艺术家/专辑/时长） |
 
 ---

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QLabel, QSystemTrayIcon
 
 import src.main_window as mw
 from src.main_window import APP_NAME, APP_VERSION, AboutDialog, MainWindow, format_time
-from src.player import PlayMode
+from src.player import PlayMode, SUPPORTED_EXTENSIONS
 
 PROJECT_ROOT = Path(mw.__file__).resolve().parents[1]
 
@@ -127,7 +127,7 @@ class FakeTrayIcon:
 class SyncScanWorker:
     """同步版 ScanWorker：start() 内直接回填结果。"""
 
-    AUDIO_EXTS = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".opus")
+    AUDIO_EXTS = tuple(SUPPORTED_EXTENSIONS)
 
     def __init__(self, folder, existing_meta_cache=None, parent=None):
         self._folder = folder

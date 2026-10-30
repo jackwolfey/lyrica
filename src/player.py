@@ -10,17 +10,25 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from tinytag import TinyTag
-from just_playback import Playback
+from just_playback import Playback, SUPPORTED_AUDIO_FORMATS
 
 
-# 支持的音频文件扩展名
-# 优先从 just_playback 读取（跟随其 wheel 实际启用的解码器），
-# fallback 到 README 声明的官方支持集合：WAV / MP3 / FLAC / Ogg Vorbis / Ogg Opus
-try:
-    from just_playback import SUPPORTED_AUDIO_FORMATS as _JP_FORMATS
-    SUPPORTED_EXTENSIONS = set(_JP_FORMATS)
-except ImportError:
-    SUPPORTED_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".opus"}
+# 支持的音频文件扩展名 —— 唯一来源是 just_playback（要求 == 1.0.0）
+# 注意：SUPPORTED_AUDIO_FORMATS 报的是"格式名"（如 "ogg-vorbis"），不是扩展名，
+# 所以这里做一层格式名 → 扩展名的映射，扫描与播放前过滤都以它为准。
+_FORMAT_EXTENSIONS = {
+    "wav": (".wav",),
+    "mp3": (".mp3",),
+    "flac": (".flac",),
+    "ogg-vorbis": (".ogg",),
+    "ogg-opus": (".opus",),
+}
+SUPPORTED_EXTENSIONS = {
+    ext
+    for fmt, exts in _FORMAT_EXTENSIONS.items()
+    if fmt in SUPPORTED_AUDIO_FORMATS
+    for ext in exts
+}
 
 
 class PlayMode(Enum):
