@@ -14,7 +14,13 @@ from just_playback import Playback
 
 
 # 支持的音频文件扩展名
-SUPPORTED_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".opus"}
+# 优先从 just_playback 读取（跟随其 wheel 实际启用的解码器），
+# fallback 到 README 声明的官方支持集合：WAV / MP3 / FLAC / Ogg Vorbis / Ogg Opus
+try:
+    from just_playback import SUPPORTED_AUDIO_FORMATS as _JP_FORMATS
+    SUPPORTED_EXTENSIONS = set(_JP_FORMATS)
+except ImportError:
+    SUPPORTED_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".opus"}
 
 
 class PlayMode(Enum):
