@@ -263,6 +263,23 @@ def test_on_track_changed_updates_labels_and_highlight(window, tmp_path):
     assert window.tracks_list.currentRow() == 0
 
 
+def test_track_row_text_color_follows_selection(window, tmp_path):
+    paths = make_files(tmp_path / "album", ["a.mp3", "b.mp3", "c.mp3"])
+    window.player.add_files(paths)
+    window._refresh_tracks_list()
+
+    def color_of(row: int) -> str:
+        return window.tracks_list.itemWidget(window.tracks_list.item(row)).styleSheet()
+
+    window.tracks_list.setCurrentRow(0)
+    assert color_of(0) == "color:#1e1e2e;"
+    assert color_of(1) == "color:#cdd6f4;"
+
+    window.tracks_list.setCurrentRow(2)
+    assert color_of(0) == "color:#cdd6f4;"
+    assert color_of(2) == "color:#1e1e2e;"
+
+
 def test_on_track_changed_with_invalid_index_resets_labels(window):
     window.lbl_title.setText("something")
     window.lbl_meta_title.setText("something")

@@ -10,7 +10,9 @@ import sys
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Slot, QThread, Signal, QTimer
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QPen, QShortcut, QKeySequence
+from PySide6.QtGui import (
+    QAction, QColor, QIcon, QPainter, QPixmap, QPen, QShortcut, QKeySequence,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
@@ -460,6 +462,8 @@ class MainWindow(QMainWindow):
         self.tracks_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tracks_list.customContextMenuRequested.connect(self._show_tracks_menu)
         self.tracks_list.itemDoubleClicked.connect(self._on_track_double_clicked)
+        # itemWidget 里的 label 不继承 ::item:selected 的文字颜色，需手动同步
+        self.tracks_list.currentRowChanged.connect(self._sync_track_row_colors)
 
         for lst in (self.groups_list, self.tracks_list):
             lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -585,6 +589,7 @@ class MainWindow(QMainWindow):
             self.tracks_list.blockSignals(True)
             self.tracks_list.setCurrentRow(ti)
             self.tracks_list.blockSignals(False)
+            self._sync_track_row_colors()
             self.tracks_list.scrollToItem(
                 self.tracks_list.item(ti), QListWidget.PositionAtCenter
             )
@@ -970,6 +975,7 @@ class MainWindow(QMainWindow):
                 self.tracks_list.blockSignals(True)
                 self.tracks_list.setCurrentRow(ti)
                 self.tracks_list.blockSignals(False)
+                self._sync_track_row_colors()
         else:
             self.lbl_title.setText("未加载曲目")
             self.lbl_title.setToolTip("")
@@ -1018,8 +1024,22 @@ class MainWindow(QMainWindow):
                     self.tracks_list.setCurrentRow(ti)
         else:
             self.lbl_tracks_header.setText("🎵 曲目")
+        self._sync_track_row_colors()
         self.tracks_list.setUpdatesEnabled(True)
         self.tracks_list.blockSignals(False)
+
+    def _sync_track_row_colors(self):
+        """同步曲目行文字颜色：选中行用与 QSS `::item:selected` 相同的深色，
+        其余行保持列表浅灰。itemWidget 里的 QLabel 不在 QSS 选中态作用范围内，
+        不手动同步就会出现"蓝底浅字"的低对比度问题。"""
+        cur = self.tracks_list.currentRow()
+        for i in range(self.tracks_list.count()):
+            label = self.tracks_list.itemWidget(self.tracks_list.item(i))
+            if not isinstance(label, _MarqueeLabel):
+                continue
+            color = "#1e1e2e" if i == cur else "#cdd6f4"
+            if label.styleSheet() != f"color:{color};":
+                label.setStyleSheet(f"color:{color};")
 
     @Slot(str)
     def _on_error(self, msg: str):
