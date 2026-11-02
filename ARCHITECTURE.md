@@ -276,8 +276,9 @@ QApplication 启动
 - **修复二：去 itemWidget**。曲目行改为纯文本 `QListWidgetItem`（路径存 `UserRole`），文字、选中色、超长 marquee、播放圆角描边全部由 `PlayingItemDelegate` 绘制；`_sync_track_row_colors()` 删除（QSS `::item:selected` 直接生效）
 - **修复三：单一时钟**。曲目列表共享一个 `_marquee_offset` + 一个 50ms `QTimer`，仅当存在超宽文本且窗口可见时启动，隐藏到托盘自动停止；`groups_list` 不启用 marquee
 - **修复四：去重复刷新**。`_on_group_selected()` 只调 `set_active_group()`，统一由 `_on_active_group_external()` 刷新
+- **修复五：叠加文本消除**。`QStyledItemDelegate.paint()` 内部会再次调用 `initStyleOption()`，外部清空 `opt.text` 会被重新填回，导致静止文本与滚动文本重叠；改为在 delegate 内覆写 `initStyleOption()`，超宽行在源头清空默认文本，只保留 marquee 绘制
 - **实测收益（离屏环境）**：切到 208 首长文件名播放组 250ms → **5.5ms**；常驻定时器 207 → **0**（按需 1 个）；事件循环探针 49/100 → **99/100**；同组双击重建 1 次 → **0 次**，滚动位置不变
-- **测试**：删除基于 itemWidget 的取色测试，新增 3 个回归用例（文本 item 无控件、内容未变不重建、同组播放不滚动不重建），总数 178 → 180
+- **测试**：删除基于 itemWidget 的取色测试，新增 4 个回归用例（文本 item 无控件、超宽行默认文本清空、内容未变不重建、同组播放不滚动不重建），总数 178 → 181
 
 ---
 
@@ -343,7 +344,7 @@ spec 关键配置：
 
 ```bash
 pip install -r requirements-dev.txt
-QT_QPA_PLATFORM=offscreen python -m pytest            # 180 个用例
+QT_QPA_PLATFORM=offscreen python -m pytest            # 181 个用例
 QT_QPA_PLATFORM=offscreen python -m pytest --cov=src --cov=main   # 覆盖率 ~99%
 ```
 

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QSlider, QSplitter, QStyle,
-    QStyleOptionViewItem, QSystemTrayIcon,
+    QSystemTrayIcon,
     QVBoxLayout, QWidget, QGridLayout, QStyledItemDelegate
 )
 
@@ -43,6 +43,22 @@ class PlayingItemDelegate(QStyledItemDelegate):
         self._get_playing = playing_index_getter
         self._get_marquee_offset = marquee_offset_getter
 
+    def initStyleOption(self, option, index):
+        # 关键：QStyledItemDelegate.paint() 内部会再次调用 initStyleOption()，
+        # 在外部把 opt.text 清空是无效的（会被重新从 DisplayRole 填回来），
+        # 结果就是"静止文本 + 滚动文本"重叠。必须在本方法里就地清空。
+        super().initStyleOption(option, index)
+        if self._get_marquee_offset is None:
+            return
+        text = option.text or ""
+        if not text:
+            return
+        inner = option.rect.adjusted(
+            self._TEXT_LEFT_PAD, 0, -self._TEXT_RIGHT_PAD, 0
+        )
+        if option.fontMetrics.horizontalAdvance(text) > inner.width():
+            option.text = ""
+
     def paint(self, painter, option, index):
         offset = self._get_marquee_offset() if self._get_marquee_offset else None
         text = index.data(Qt.DisplayRole) or ""
@@ -53,11 +69,9 @@ class PlayingItemDelegate(QStyledItemDelegate):
             )
             text_width = fm.horizontalAdvance(text)
             if text_width > inner.width():
-                # 只让底绘画背景/选中态，文本自己画，避免叠加两层
-                opt = QStyleOptionViewItem(option)
-                self.initStyleOption(opt, index)
-                opt.text = ""
-                super().paint(painter, opt, index)
+                # 背景/选中态交给基类；文本已在 initStyleOption 中被清空，
+                # 这里只负责画滚动文本，不会出现重影
+                super().paint(painter, option, index)
                 color = "#1e1e2e" if option.state & QStyle.State_Selected else "#cdd6f4"
                 painter.save()
                 painter.setClipRect(inner)

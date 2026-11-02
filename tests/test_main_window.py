@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QLabel, QSystemTrayIcon
+from PySide6.QtWidgets import (
+    QApplication, QLabel, QStyleOptionViewItem, QSystemTrayIcon
+)
 
 import src.main_window as mw
 from src.main_window import APP_NAME, APP_VERSION, AboutDialog, MainWindow, format_time
@@ -331,6 +333,35 @@ def test_track_rows_use_text_items_without_widgets(window, tmp_path):
         assert item.text() == os.path.basename(path)
         assert item.data(Qt.UserRole) == path
         assert window.tracks_list.itemWidget(item) is None
+
+
+def test_overflow_row_hides_default_text_for_marquee(window, tmp_path):
+    """超宽行必须清空默认文本，否则静止文本会和滚动文本重叠。
+
+    回归点：QStyledItemDelegate.paint() 会再次调用 initStyleOption()，
+    外部清空 opt.text 无效，必须在 delegate 内覆写 initStyleOption。
+    """
+    long_name = "A Very Long Track Title " * 6 + ".mp3"
+    paths = make_files(tmp_path / "album", [long_name, "short.mp3"])
+    window.player.add_files(paths)
+    window.resize(360, 420)
+    window.show()
+    QApplication.instance().processEvents()
+    window._refresh_tracks_list()
+
+    delegate = window.tracks_list.itemDelegate()
+    model = window.tracks_list.model()
+
+    def styled_text(row: int) -> str:
+        index = model.index(row, 0)
+        opt = QStyleOptionViewItem()
+        opt.rect = window.tracks_list.visualRect(index)
+        delegate.initStyleOption(opt, index)
+        return opt.text
+
+    rows = {window.tracks_list.item(i).text(): i for i in range(2)}
+    assert styled_text(rows[long_name]) == ""          # 交给 marquee 绘制
+    assert styled_text(rows["short.mp3"]) == "short.mp3"  # 正常行保持原文本
 
 
 def test_refresh_tracks_list_skips_when_content_unchanged(window, tmp_path):
