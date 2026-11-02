@@ -2,7 +2,7 @@
 
 > 轻量级本地音乐播放器 · Python + PySide6 + just_playback
 > 
-> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → v1.0.4 → v1.0.5 → v1.1.0 → **v1.1.1**
+> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → v1.0.4 → v1.0.5 → v1.1.0 → v1.1.1 → **v1.1.2（待发版）**
 
 ---
 
@@ -268,6 +268,17 @@ QApplication 启动
 - **修复**：在 `_connect_signals()` 中把 `track_changed` / `active_group_changed` 直连到两个列表 `viewport().update()`，信号到达即排队重绘并自动合并，千行量级仍是毫秒级开销
 - **回归测试**：新增 `test_playing_marker_viewport_update_on_track_change`，用事件过滤器统计 viewport 收到的 `UpdateRequest`，精确复现"目标行即选中行"场景（修复前收到 0 个重绘请求），测试总数 176 → 178
 
+### v1.1.2（待发版）
+> 性能与交互修复：大播放组切换卡顿、双击播放后列表重建/高亮沉底
+- **卡顿根因（三处叠加）**：① `_on_group_selected()` 在 `set_active_group()` 触发 `active_group_changed → _on_active_group_external` 刷新之后**又手动刷新一次**，每次切组重建两遍；② 曲目行用 `setItemWidget(_MarqueeLabel)`，208 行 = 208 个子控件 + 207 个 40ms 独立 `QTimer`，常驻事件循环（实测 1 秒内 10ms 探针只能触发 49 次，约 50% 饱和）；③ `_sync_track_row_colors()` 对每行调用 `setStyleSheet()`，新行全部触发样式重新 polish
+- **列表重建根因**：`play_track_in_group()` 无条件 emit `active_group_changed`，于是**每次双击播放同组曲目都会整表 clear + 重建**，滚动位置随之归零，`setCurrentRow()` 再把目标行滚到视口底部
+- **修复一：快照短路**。`_refresh_tracks_list()` 以 `(组索引, 曲目路径元组)` 作为快照 key，内容未变直接 return —— 同组播放/重复点选零重建，滚动位置与选中态保持；同组内的结构性变化（排序等）重建后恢复原滚动值
+- **修复二：去 itemWidget**。曲目行改为纯文本 `QListWidgetItem`（路径存 `UserRole`），文字、选中色、超长 marquee、播放圆角描边全部由 `PlayingItemDelegate` 绘制；`_sync_track_row_colors()` 删除（QSS `::item:selected` 直接生效）
+- **修复三：单一时钟**。曲目列表共享一个 `_marquee_offset` + 一个 50ms `QTimer`，仅当存在超宽文本且窗口可见时启动，隐藏到托盘自动停止；`groups_list` 不启用 marquee
+- **修复四：去重复刷新**。`_on_group_selected()` 只调 `set_active_group()`，统一由 `_on_active_group_external()` 刷新
+- **实测收益（离屏环境）**：切到 208 首长文件名播放组 250ms → **5.5ms**；常驻定时器 207 → **0**（按需 1 个）；事件循环探针 49/100 → **99/100**；同组双击重建 1 次 → **0 次**，滚动位置不变
+- **测试**：删除基于 itemWidget 的取色测试，新增 3 个回归用例（文本 item 无控件、内容未变不重建、同组播放不滚动不重建），总数 178 → 180
+
 ---
 
 ## 七、性能数据
@@ -280,6 +291,9 @@ QApplication 启动
 | ScanWorker 重启后加同文件夹 | 串行重读全部 | **0.3ms**（全跳过） |
 | ScanWorker 首次（HDD） | 串行 TinyTag | **8 线程并行** |
 | QListWidget 1000 首刷新 | 500-1500ms | **<50ms**（setUpdatesEnabled） |
+| 切到 208 首长文件名播放组 | 250ms（双重建 + 208 控件） | **5.5ms**（纯 item + delegate） |
+| 208 行常驻定时器 | 207 个（40ms，事件循环 ~50% 饱和） | **0 个**（按需 1 个共享时钟） |
+| 同组双击播放 | 整表重建，滚动位置归零 | **0 次重建**，滚动位置不变 |
 
 ---
 
@@ -290,7 +304,7 @@ QApplication 启动
 | 跨组拖拽曲目 | 不支持 | 模糊"文件夹=组"不变量，暂不做 |
 | 均衡器 / 音效 | 依赖 just_playback（miniaudio 无 DSP API） | 需换 sounddevice 回调引擎，v2.0 级别 |
 | LRC 歌词 | 未做 | 同目录同名 .lrc 文件自动匹配，实现不难 |
-| Model/View 架构 | QListWidget（Widget 模式） | 曲目超 5000 首时建议换成 QAbstractListModel |
+| Model/View 架构 | QListWidget + 自定义 delegate（已无 itemWidget） | 曲目超 5000 首时建议换成 QAbstractListModel |
 | m4a / aac / wma 播放 | 后端（miniaudio）无对应解码器，扫描阶段已排除 | 需引入 ffmpeg 转码层或换 QtMultimedia / PyAV，会牺牲"轻量"定位 |
 | 系统级全局热键 | 已有窗口内 `QShortcut` | 窗口失焦时仍需 QHotkey 或各平台 RegisterHotKey 封装 |
 | `reset_group_order` 索引未重映射 | 重排后 `_current_index` 仍指向旧位置 | 照抄 `_swap_groups` 的 `playing_path → index()` 恢复逻辑 |
@@ -329,7 +343,7 @@ spec 关键配置：
 
 ```bash
 pip install -r requirements-dev.txt
-QT_QPA_PLATFORM=offscreen python -m pytest            # 178 个用例
+QT_QPA_PLATFORM=offscreen python -m pytest            # 180 个用例
 QT_QPA_PLATFORM=offscreen python -m pytest --cov=src --cov=main   # 覆盖率 ~99%
 ```
 

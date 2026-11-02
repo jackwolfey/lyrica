@@ -16,7 +16,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QMenu, QMessageBox, QPushButton, QSlider, QSplitter, QSystemTrayIcon,
+    QMenu, QMessageBox, QPushButton, QSlider, QSplitter, QStyle,
+    QStyleOptionViewItem, QSystemTrayIcon,
     QVBoxLayout, QWidget, QGridLayout, QStyledItemDelegate
 )
 
@@ -24,18 +25,56 @@ from .player import PlayMode, MusicPlayer, SUPPORTED_EXTENSIONS
 
 
 # v1.1: 自定义 delegate —— 给"正在播放"的 item 画一个空心圆角矩形
+# v1.1.2: 曲目行不再使用 itemWidget，改为纯 delegate 绘制（含 marquee）。
+#         每行一个 QLabel + 一个 40ms QTimer 的旧方案在 200+ 行时会让事件循环
+#         持续饱和（208 行 = 207 个定时器），改用全局唯一偏移量 + 单一 QTimer。
 class PlayingItemDelegate(QStyledItemDelegate):
     """在 QListWidget 正常选中/未选中之外，再叠加一个"正在播放"的视觉标记：
     一个半透明主题色的空心圆角矩形。通过 playing_index_getter callable
-    实时获取当前"正在播放"的 row index，解耦状态管理。"""
+    实时获取当前"正在播放"的 row index，解耦状态管理。
+    可选 marquee_offset_getter：返回全局滚动偏移（像素），非 None 时对
+    超出可视宽度的文本做横向滚动，偏移由外部单一 QTimer 统一下发。"""
 
-    def __init__(self, playing_index_getter=None, parent=None):
+    _TEXT_LEFT_PAD = 5
+    _TEXT_RIGHT_PAD = 6
+
+    def __init__(self, playing_index_getter=None, marquee_offset_getter=None, parent=None):
         super().__init__(parent)
         self._get_playing = playing_index_getter
+        self._get_marquee_offset = marquee_offset_getter
 
     def paint(self, painter, option, index):
-        # 1. 先画 Qt 默认的选中/未选中
-        super().paint(painter, option, index)
+        offset = self._get_marquee_offset() if self._get_marquee_offset else None
+        text = index.data(Qt.DisplayRole) or ""
+        if offset is not None and text:
+            fm = option.fontMetrics
+            inner = option.rect.adjusted(
+                self._TEXT_LEFT_PAD, 0, -self._TEXT_RIGHT_PAD, 0
+            )
+            text_width = fm.horizontalAdvance(text)
+            if text_width > inner.width():
+                # 只让底绘画背景/选中态，文本自己画，避免叠加两层
+                opt = QStyleOptionViewItem(option)
+                self.initStyleOption(opt, index)
+                opt.text = ""
+                super().paint(painter, opt, index)
+                color = "#1e1e2e" if option.state & QStyle.State_Selected else "#cdd6f4"
+                painter.save()
+                painter.setClipRect(inner)
+                painter.setPen(QColor(color))
+                v_center = inner.top() + (
+                    inner.height() + fm.ascent() - fm.descent()
+                ) // 2
+                gap = 40
+                cur_x = inner.left() - offset
+                painter.drawText(int(cur_x), v_center, text)
+                painter.drawText(int(cur_x + text_width + gap), v_center, text)
+                painter.restore()
+            else:
+                super().paint(painter, option, index)
+        else:
+            super().paint(painter, option, index)
+
         # 2. 如果这行就是"正在播放"的 item，叠一个空心圆角矩形
         playing_row = self._get_playing() if self._get_playing else None
         if playing_row is not None and index.row() == playing_row:
@@ -288,6 +327,16 @@ class MainWindow(QMainWindow):
         self._minimize_to_tray: bool = False  # 最小化到托盘开关
         self._force_quit: bool = False  # v1.0.3: 强制退出标志（绕过托盘拦截）
 
+        # v1.1.2: 曲目列表改为 delegate 绘制 —— 全列表共享一个 marquee 时钟
+        self._marquee_offset: int = 0
+        self._marquee_span: int = 0
+        self._marquee_timer = QTimer(self)
+        self._marquee_timer.setInterval(50)   # 20 fps，足够顺滑且开销可控
+        self._marquee_timer.timeout.connect(self._on_marquee_tick)
+        # 已渲染快照：(组索引, 曲目路径元组)。相同则跳过重建，
+        # 避免"播放同组曲目 / 重复点击同组"把整张列表推倒重来。
+        self._rendered_tracks_key = None
+
         # 系统托盘（可选）
         self._tray: Optional[QSystemTrayIcon] = None
 
@@ -462,8 +511,6 @@ class MainWindow(QMainWindow):
         self.tracks_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tracks_list.customContextMenuRequested.connect(self._show_tracks_menu)
         self.tracks_list.itemDoubleClicked.connect(self._on_track_double_clicked)
-        # itemWidget 里的 label 不继承 ::item:selected 的文字颜色，需手动同步
-        self.tracks_list.currentRowChanged.connect(self._sync_track_row_colors)
 
         for lst in (self.groups_list, self.tracks_list):
             lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -485,7 +532,11 @@ class MainWindow(QMainWindow):
             return self.player.get_track_index_in_group(flat)
 
         self.groups_list.setItemDelegate(PlayingItemDelegate(_playing_group_row))
-        self.tracks_list.setItemDelegate(PlayingItemDelegate(_playing_track_row))
+        # 曲目列表额外接管 marquee：偏移由窗口级单一 QTimer 下发
+        self.tracks_list.setItemDelegate(
+            PlayingItemDelegate(_playing_track_row, lambda: self._marquee_offset)
+        )
+        self.tracks_list.setUniformItemSizes(True)  # 行高一致 → 布局/滚动更快
 
         right_container = QFrame()
         right_container.setObjectName("rightPanel")
@@ -599,7 +650,6 @@ class MainWindow(QMainWindow):
             self.tracks_list.blockSignals(True)
             self.tracks_list.setCurrentRow(ti)
             self.tracks_list.blockSignals(False)
-            self._sync_track_row_colors()
             self.tracks_list.scrollToItem(
                 self.tracks_list.item(ti), QListWidget.PositionAtCenter
             )
@@ -913,8 +963,11 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _on_group_selected(self, group_index: int):
+        # set_active_group 会 emit active_group_changed，由
+        # _on_active_group_external 统一刷新曲目列表。
+        # 旧实现在这里又调了一次 _refresh_tracks_list → 每次切组都重建两遍
+        # （208 行场景下相当于双倍开销）。
         self.player.set_active_group(group_index)
-        self._refresh_tracks_list()
 
     @Slot(int)
     def _on_active_group_external(self, group_index: int):
@@ -985,7 +1038,6 @@ class MainWindow(QMainWindow):
                 self.tracks_list.blockSignals(True)
                 self.tracks_list.setCurrentRow(ti)
                 self.tracks_list.blockSignals(False)
-                self._sync_track_row_colors()
         else:
             self.lbl_title.setText("未加载曲目")
             self.lbl_title.setToolTip("")
@@ -1009,22 +1061,32 @@ class MainWindow(QMainWindow):
     @Slot()
     def _refresh_tracks_list(self):
         gi = self.player.get_active_group_index()
+        tracks = self.player.get_group_tracks(gi) if 0 <= gi else []
+        key = (gi, tuple(tracks))
+        if key == self._rendered_tracks_key:
+            # 内容与当前展示完全一致（播放同组曲目、重复点选同组）→ 直接返回。
+            # 旧实现在这里会把整张列表 clear + 重建：208 行要 new 208 个 QLabel
+            # 和 207 个 QTimer，还会把滚动位置重置，导致"高亮沉到列表底部"。
+            return
+        same_group = (
+            self._rendered_tracks_key is not None
+            and self._rendered_tracks_key[0] == gi
+        )
+        scroll = self.tracks_list.verticalScrollBar().value() if same_group else 0
+
         self.tracks_list.blockSignals(True)
         self.tracks_list.setUpdatesEnabled(False)
         self.tracks_list.clear()
-        if 0 <= gi:
-            tracks = self.player.get_group_tracks(gi)
-            # 每行用 _MarqueeLabel 作为 widget，超长自动横向滚动
-            for t in tracks:
-                row = QListWidgetItem(self.tracks_list)
-                row.setData(Qt.UserRole, t)  # 存完整路径
-                label = _MarqueeLabel(os.path.basename(t))
-                label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-                label.setContentsMargins(4, 0, 4, 0)
-                self.tracks_list.addItem(row)
-                self.tracks_list.setItemWidget(row, label)
-            self.lbl_tracks_header.setText(f"🎵 {len(tracks)} 首")
+        # 纯文本 item + delegate 绘制：无 itemWidget、无 per-row 定时器
+        for t in tracks:
+            row = QListWidgetItem(os.path.basename(t))
+            row.setData(Qt.UserRole, t)  # 存完整路径
+            row.setToolTip(t)
+            self.tracks_list.addItem(row)
+        self._rendered_tracks_key = key
 
+        if 0 <= gi:
+            self.lbl_tracks_header.setText(f"🎵 {len(tracks)} 首")
             # 仅在真正有已加载曲目时恢复高亮
             cur = self.player.get_current_index()
             has_loaded = self.player.is_playing() or self.player.is_paused()
@@ -1034,22 +1096,62 @@ class MainWindow(QMainWindow):
                     self.tracks_list.setCurrentRow(ti)
         else:
             self.lbl_tracks_header.setText("🎵 曲目")
-        self._sync_track_row_colors()
+
         self.tracks_list.setUpdatesEnabled(True)
         self.tracks_list.blockSignals(False)
 
-    def _sync_track_row_colors(self):
-        """同步曲目行文字颜色：选中行用与 QSS `::item:selected` 相同的深色，
-        其余行保持列表浅灰。itemWidget 里的 QLabel 不在 QSS 选中态作用范围内，
-        不手动同步就会出现"蓝底浅字"的低对比度问题。"""
-        cur = self.tracks_list.currentRow()
+        # 同组内的结构性变化（排序等）保持原滚动位置
+        if same_group:
+            self.tracks_list.verticalScrollBar().setValue(scroll)
+        self._update_marquee()
+
+    # ==================== 曲目行 marquee（v1.1.2 单时钟版） ====================
+
+    def _update_marquee(self):
+        """判定是否有超宽文本需要滚动，并维护共享偏移上限。
+        只在需要时启动唯一的 QTimer；没有超宽文本就彻底停掉，零常驻开销。"""
+        if getattr(self, "tracks_list", None) is None:
+            return
+        fm = self.tracks_list.fontMetrics()
+        avail = self.tracks_list.viewport().width()
+        need = False
+        span = 0
         for i in range(self.tracks_list.count()):
-            label = self.tracks_list.itemWidget(self.tracks_list.item(i))
-            if not isinstance(label, _MarqueeLabel):
-                continue
-            color = "#1e1e2e" if i == cur else "#cdd6f4"
-            if label.styleSheet() != f"color:{color};":
-                label.setStyleSheet(f"color:{color};")
+            w = fm.horizontalAdvance(self.tracks_list.item(i).text())
+            if w > span:
+                span = w
+            if w > avail - 16:
+                need = True
+        self._marquee_span = span + 40 if span else 0
+        if need and self.tracks_list.isVisible():
+            if not self._marquee_timer.isActive():
+                self._marquee_timer.start()
+        else:
+            self._marquee_timer.stop()
+            self._marquee_offset = 0
+            self.tracks_list.viewport().update()
+
+    def _on_marquee_tick(self):
+        self._marquee_offset += 1
+        if self._marquee_offset > self._marquee_span:
+            self._marquee_offset = 0
+        self.tracks_list.viewport().update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_marquee()
+
+    def hideEvent(self, event):
+        # 最小化到托盘 / 隐藏窗口时停掉 marquee，避免不可见时白烧 CPU
+        super().hideEvent(event)
+        self._marquee_timer.stop()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # __init__ 中 resize() 可能早于 _build_ui 完成
+        if getattr(self, "tracks_list", None) is None:
+            return
+        self._update_marquee()
 
     @Slot(str)
     def _on_error(self, msg: str):

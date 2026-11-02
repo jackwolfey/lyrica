@@ -316,21 +316,65 @@ def test_on_track_changed_updates_labels_and_highlight(window, tmp_path):
     assert window.tracks_list.currentRow() == 0
 
 
-def test_track_row_text_color_follows_selection(window, tmp_path):
-    paths = make_files(tmp_path / "album", ["a.mp3", "b.mp3", "c.mp3"])
+def test_track_rows_use_text_items_without_widgets(window, tmp_path):
+    """v1.1.2: 曲目行改为纯文本 item + delegate 绘制。
+
+    回归点：旧实现每行 setItemWidget(_MarqueeLabel)，208 行会创建 208 个
+    子控件和 207 个 40ms 定时器，切换大播放组时明显卡顿。
+    """
+    paths = make_files(tmp_path / "album", ["a.mp3", "b.mp3"])
     window.player.add_files(paths)
     window._refresh_tracks_list()
 
-    def color_of(row: int) -> str:
-        return window.tracks_list.itemWidget(window.tracks_list.item(row)).styleSheet()
+    for row, path in enumerate(paths):
+        item = window.tracks_list.item(row)
+        assert item.text() == os.path.basename(path)
+        assert item.data(Qt.UserRole) == path
+        assert window.tracks_list.itemWidget(item) is None
 
-    window.tracks_list.setCurrentRow(0)
-    assert color_of(0) == "color:#1e1e2e;"
-    assert color_of(1) == "color:#cdd6f4;"
 
-    window.tracks_list.setCurrentRow(2)
-    assert color_of(0) == "color:#cdd6f4;"
-    assert color_of(2) == "color:#1e1e2e;"
+def test_refresh_tracks_list_skips_when_content_unchanged(window, tmp_path):
+    """内容未变时不得重建列表（同组播放/重复点选不应重排列表）。"""
+    paths = make_files(tmp_path / "album", [f"s{i}.mp3" for i in range(30)])
+    window.player.add_files(paths)
+    window._refresh_tracks_list()
+    window.show()
+    QApplication.instance().processEvents()
+
+    window.tracks_list.setCurrentRow(10)
+    QApplication.instance().processEvents()
+    scroll_before = window.tracks_list.verticalScrollBar().value()
+    first_item = window.tracks_list.item(0)
+
+    window._refresh_tracks_list()
+
+    # 同一个 QListWidgetItem 对象 → 没有 clear + 重建
+    assert window.tracks_list.item(0) is first_item
+    assert window.tracks_list.currentRow() == 10
+    assert window.tracks_list.verticalScrollBar().value() == scroll_before
+
+
+def test_play_same_group_keeps_scroll_without_rebuild(window, tmp_path):
+    """双击同组曲目不应刷新列表，也不应把高亮项甩到列表底部。"""
+    paths = make_files(tmp_path / "album", [f"s{i}.mp3" for i in range(40)])
+    window.player.add_files(paths)
+    window._refresh_tracks_list()
+    window.show()
+    app = QApplication.instance()
+    app.processEvents()
+
+    window.player.play_track_in_group(0, 5)
+    app.processEvents()
+    first_item = window.tracks_list.item(0)
+    scroll_before = window.tracks_list.verticalScrollBar().value()
+
+    # 播放当前视口内的另一首（模拟双击）
+    window.player.play_track_in_group(0, 10)
+    app.processEvents()
+
+    assert window.tracks_list.item(0) is first_item
+    assert window.tracks_list.currentRow() == 10
+    assert window.tracks_list.verticalScrollBar().value() == scroll_before
 
 
 def test_on_track_changed_with_invalid_index_resets_labels(window):
