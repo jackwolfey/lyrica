@@ -2,7 +2,7 @@
 
 > 轻量级本地音乐播放器 · Python + PySide6 + just_playback
 > 
-> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → v1.0.4 → v1.0.5 → v1.1.0 → v1.1.1 → **v1.1.2（待发版）**
+> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → v1.0.4 → v1.0.5 → v1.1.0 → v1.1.1 → **v1.1.2**
 
 ---
 
@@ -139,7 +139,7 @@ Step 3: need_read 的 → ThreadPoolExecutor(max_workers=8) 并行读
 
 ```json
 {
-  "version": "1.1.1",
+  "version": "1.1.2",
   "play_mode": "LIST_LOOP",
   "volume": 0.7,
   "window_size": {"w": 800, "h": 500},
@@ -261,14 +261,14 @@ QApplication 启动
 - **依赖收紧**：`just_playback` 固定为 `== 1.0.0`，Python 最低版本提升到 3.9
 - **跨平台构建 + 自动发布**：`Lyrica.spec` 适配 Windows / macOS / Linux（macOS 生成 `.app` 且关闭 UPX），新增 tag 触发的 GitHub Actions 流水线，三端产物并行打包并自动创建 Release
 
-### v1.1.1（当前）
+### v1.1.1
 > Bug 修复：播放组"正在播放"圆角框更新滞后
 - **问题**：切换播放组后，左侧播放组面板的"正在播放"空心圆角框不即时跟随，需滚动/悬停/缩放窗口后才跳到正确位置
 - **成因**：圆角框由 `PlayingItemDelegate.paint()` 现查 `player` 状态绘制，属被动绘制；播放行变化时全项目无任何 `viewport().update()` 主动失效，此前仅依赖 `_on_track_changed` 中 `groups_list.setCurrentRow()` 的选中态副作用触发重绘。当目标行**已是选中行**时（用户先点选组再双击其中曲目，或 `play_track_in_group()` 先 emit `active_group_changed` 已同步选中），`setCurrentRow` 为 no-op，旧行残留 / 新行缺失。右侧曲目面板因 `active_group_changed` 触发整表 `_refresh_tracks_list()` 重建而总能即时刷新，故只有左侧出现滞后
 - **修复**：在 `_connect_signals()` 中把 `track_changed` / `active_group_changed` 直连到两个列表 `viewport().update()`，信号到达即排队重绘并自动合并，千行量级仍是毫秒级开销
 - **回归测试**：新增 `test_playing_marker_viewport_update_on_track_change`，用事件过滤器统计 viewport 收到的 `UpdateRequest`，精确复现"目标行即选中行"场景（修复前收到 0 个重绘请求），测试总数 176 → 178
 
-### v1.1.2（待发版）
+### v1.1.2（当前）
 > 性能与交互修复：大播放组切换卡顿、双击播放后列表重建/高亮沉底
 - **卡顿根因（三处叠加）**：① `_on_group_selected()` 在 `set_active_group()` 触发 `active_group_changed → _on_active_group_external` 刷新之后**又手动刷新一次**，每次切组重建两遍；② 曲目行用 `setItemWidget(_MarqueeLabel)`，208 行 = 208 个子控件 + 207 个 40ms 独立 `QTimer`，常驻事件循环（实测 1 秒内 10ms 探针只能触发 49 次，约 50% 饱和）；③ `_sync_track_row_colors()` 对每行调用 `setStyleSheet()`，新行全部触发样式重新 polish
 - **列表重建根因**：`play_track_in_group()` 无条件 emit `active_group_changed`，于是**每次双击播放同组曲目都会整表 clear + 重建**，滚动位置随之归零，`setCurrentRow()` 再把目标行滚到视口底部

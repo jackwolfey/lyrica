@@ -20,3 +20,6 @@ lyrica_settings.json
 # IDE
 .idea/
 .vscode/
+
+# 会话上传目录（截图等临时文件，不入库）
+.uploads/
