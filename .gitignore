@@ -13,6 +13,7 @@ htmlcov/
 
 # 配置（运行时自动生成）
 lyrica_settings.json
+lyrica_settings.json.tmp
 
 # macOS
 .DS_Store

@@ -153,15 +153,30 @@ class SyncScanWorker:
         self._folder = folder
         self.finished_ok = SignalStub()
         self.failed = SignalStub()
+        self.progress = SignalStub()
+        self.finished = SignalStub()
+        self.interrupted = False
 
     def start(self):
-        count = 0
-        for _root, _dirs, files in os.walk(self._folder):
-            count += sum(1 for name in files if name.lower().endswith(self.AUDIO_EXTS))
-        self.finished_ok.emit(self._folder, count, {})
+        # 与真实 ScanWorker 一致：meta_cache 的 key 就是扫描到的全部音频路径，
+        # 供 player.add_groups_from_scan() 直接建组。
+        paths = []
+        for root, _dirs, files in os.walk(self._folder):
+            for name in files:
+                if name.lower().endswith(self.AUDIO_EXTS):
+                    paths.append(os.path.abspath(os.path.join(root, name)))
+        meta_cache = {
+            p: {"title": None, "artist": None, "album": None, "duration": None}
+            for p in paths
+        }
+        self.progress.emit(len(paths), len(paths))
+        self.finished_ok.emit(self._folder, len(paths), meta_cache)
 
     def deleteLater(self):
         pass
+
+    def requestInterruption(self):
+        self.interrupted = True
 
 
 class FailingScanWorker(SyncScanWorker):
@@ -531,6 +546,26 @@ def test_add_files_dialog_adds_group(window, tmp_path, monkeypatch):
     window._on_add_files()
 
     assert window.player.get_group_count() == 1
+
+
+def test_add_files_dialog_filter_matches_supported_extensions(window, monkeypatch):
+    """v1.1.3: 过滤器由 SUPPORTED_EXTENSIONS 生成，不列出后端无法解码的格式。"""
+    captured = {}
+
+    class FakeDialog:
+        @staticmethod
+        def getOpenFileNames(*args, **_kwargs):
+            captured["filter"] = args[3]
+            return [], ""
+
+    monkeypatch.setattr(mw, "QFileDialog", FakeDialog)
+    window._on_add_files()
+
+    flt = captured["filter"]
+    for ext in mw.SUPPORTED_EXTENSIONS:
+        assert "*" + ext in flt
+    for ext in (".m4a", ".aac", ".wma"):
+        assert "*" + ext not in flt
 
 
 def test_clear_all_groups_confirmed(window, tmp_path, monkeypatch):
@@ -917,6 +952,23 @@ def test_close_event_hides_to_tray_when_enabled(window):
 # ==================== 添加文件夹流程 ====================
 
 
+class ManualScanWorker(SyncScanWorker):
+    """不自动完成的替身：模拟真实后台线程，便于验证取消与晚到结果。"""
+
+    def start(self):
+        pass
+
+
+class CancellingDialog(ImmediatelyAcceptedDialog):
+    """exec() 时模拟用户点击「取消」按钮。"""
+
+    def exec(self):
+        btn = self.findChild(mw.QPushButton)
+        if btn is not None:
+            btn.click()
+        return self.result()
+
+
 def test_add_folder_scans_then_adds_group(window, tmp_path, monkeypatch):
     base = tmp_path / "music"
     make_files(base / "Album", ["a.mp3"])
@@ -978,6 +1030,80 @@ def test_add_folder_without_audio_shows_message(window, tmp_path, monkeypatch):
 
     assert window.player.get_group_count() == 0
     assert infos and "未找到包含音频文件" in infos[0]
+
+
+def test_add_folder_progress_updates_dialog(window, tmp_path, monkeypatch):
+    seen = {}
+
+    class ProgressOnlyWorker(SyncScanWorker):
+        def start(self):
+            self.progress.emit(1, 4)
+
+    class InspectingDialog(ImmediatelyAcceptedDialog):
+        def exec(self):
+            bar = self.findChild(mw.QProgressBar)
+            seen["value"] = bar.value() if bar is not None else None
+            seen["labels"] = [l.text() for l in self.findChildren(mw.QLabel)]
+            self.accept()
+            return self.result()
+
+    monkeypatch.setattr(mw.QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *args, **kwargs: str(tmp_path)))
+    monkeypatch.setattr(mw, "ScanWorker", ProgressOnlyWorker)
+    monkeypatch.setattr(mw, "QDialog", InspectingDialog)
+
+    window._on_add_folder()
+
+    assert seen["value"] == 25
+    assert any("1 / 4" in text for text in seen["labels"])
+
+
+def test_add_folder_cancel_interrupts_worker(window, tmp_path, monkeypatch):
+    base = tmp_path / "music"
+    make_files(base / "Album", ["a.mp3"])
+    created = []
+
+    def make_worker(folder, existing, parent):
+        worker = ManualScanWorker(folder, existing, parent)
+        created.append(worker)
+        return worker
+
+    monkeypatch.setattr(mw.QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *args, **kwargs: str(base)))
+    monkeypatch.setattr(mw, "ScanWorker", make_worker)
+    monkeypatch.setattr(mw, "QDialog", CancellingDialog)
+
+    window._on_add_folder()
+
+    assert len(created) == 1
+    assert created[0].interrupted is True, "取消必须真正请求线程中断，而不是只忽略结果"
+    assert window.player.get_group_count() == 0
+
+
+def test_add_folder_cancel_ignores_late_scan_result(window, tmp_path, monkeypatch):
+    base = tmp_path / "music"
+    path = make_files(base / "Album", ["a.mp3"])[0]
+    created = []
+
+    def make_worker(folder, existing, parent):
+        worker = ManualScanWorker(folder, existing, parent)
+        created.append(worker)
+        return worker
+
+    monkeypatch.setattr(mw.QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *args, **kwargs: str(base)))
+    monkeypatch.setattr(mw, "ScanWorker", make_worker)
+    monkeypatch.setattr(mw, "QDialog", CancellingDialog)
+
+    window._on_add_folder()
+
+    # 取消后线程可能仍晚到地 emit 完成 / 失败信号，两条路径都必须被忽略。
+    created[0].finished_ok.emit(str(base), 1, {
+        path: {"title": None, "artist": None, "album": None, "duration": None},
+    })
+    created[0].failed.emit("boom")
+
+    assert window.player.get_group_count() == 0
 
 
 # ==================== 异常写盘 / 坏配置 ====================

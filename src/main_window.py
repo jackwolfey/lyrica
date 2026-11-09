@@ -16,7 +16,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QMenu, QMessageBox, QPushButton, QSlider, QSplitter, QStyle,
+    QMenu, QMessageBox, QProgressBar, QPushButton, QSlider, QSplitter, QStyle,
     QSystemTrayIcon,
     QVBoxLayout, QWidget, QGridLayout, QStyledItemDelegate
 )
@@ -184,7 +184,7 @@ class _MarqueeLabel(QLabel):
 
 
 APP_NAME = "Lyrica"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 SETTINGS_FILENAME = "lyrica_settings.json"
 
 
@@ -204,12 +204,65 @@ def format_time(seconds: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 
-# ============ 后台扫描线程（v1.0.1 新增，v1.0.2 优化2 + 并行化） ============
+# ============ 后台扫描线程（v1.0.1 新增，v1.0.2 优化2 + 并行化，v1.1.3 合并遍历） ============
+
+def _scan_audio_tree(folder: str) -> dict:
+    """一次 os.scandir 递归，产出 {音频文件绝对路径: mtime}。
+
+    DirEntry 自带目录项信息（Windows 上来自 FindFirstFile），因此路径、是否文件、
+    mtime 一趟遍历即可全部拿到，不再需要 os.walk + listdir + isfile + getmtime
+    的重复遍历。mtime 取不到时记为 None。
+
+    顶层目录读取失败会抛 OSError，由 ScanWorker 转成 failed 信号；子目录读取
+    失败静默跳过，与 os.walk(onerror=None) 的默认行为一致。
+    """
+    scanned: dict = {}
+    stack: list = []
+
+    def _walk_dir(current: str) -> list:
+        subdirs = []
+        with os.scandir(current) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        subdirs.append(entry.path)
+                    elif (entry.is_file()
+                          and os.path.splitext(entry.name)[1].lower() in SUPPORTED_EXTENSIONS):
+                        path = os.path.abspath(entry.path)
+                        try:
+                            mtime = entry.stat().st_mtime
+                        except OSError:
+                            mtime = None
+                        scanned[path] = mtime
+                except OSError:
+                    continue
+        return subdirs
+
+    try:
+        stack.extend(_walk_dir(folder))
+    except FileNotFoundError:
+        # 目录在选择后被删除：与 os.walk 的静默行为一致，按「空结果」处理
+        return {}
+    while stack:
+        current = stack.pop()
+        try:
+            stack.extend(_walk_dir(current))
+        except OSError:
+            continue
+    return scanned
+
+
 class ScanWorker(QThread):
     """递归扫描文件夹，并行预读 metadata。
-    v1.0.3 优化：接受已有 meta_cache → 跳过已缓存文件；ThreadPoolExecutor 并行读 IO。"""
+    v1.0.3 优化：接受已有 meta_cache → 跳过已缓存文件；ThreadPoolExecutor 并行读 IO。
+    v1.1.3 优化：一次 scandir 同时拿路径与 mtime；finished_ok 的 meta_cache 的
+                 key 即本次扫描到的全部音频路径，供 player.add_groups_from_scan 复用。
+    v1.1.3 交互：progress 上报 (已就绪数, 音频总数)，缓存命中的直接计入「已就绪」；
+                 主线程调用 requestInterruption() 可中止耗时的标签读取，中断后
+                 不再 emit finished_ok / failed，由 QThread.finished 负责清理。"""
     finished_ok = Signal(str, int, dict)  # folder_path, total_audio_count, meta_cache
     failed = Signal(str)
+    progress = Signal(int, int)  # done, total
 
     def __init__(self, folder_path: str, existing_meta_cache: dict = None, parent=None):
         super().__init__(parent)
@@ -221,57 +274,70 @@ class ScanWorker(QThread):
             from tinytag import TinyTag
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            # Step 1: 快速 os.walk 只收集路径（不读 metadata）
-            all_paths: list = []
-            for root, dirs, files in os.walk(self._folder):
-                for fname in files:
-                    ext = os.path.splitext(fname)[1].lower()
-                    if ext in SUPPORTED_EXTENSIONS:
-                        all_paths.append(os.path.join(root, fname))
+            # Step 1: 一次遍历收集路径 + mtime（不读 metadata）
+            scanned = _scan_audio_tree(self._folder)
 
-            # Step 2: 已缓存的直接复用，跳过 TinyTag；同时确保 _mtime 存在
+            # Step 2: 已缓存的直接复用，跳过 TinyTag；_mtime 从扫描结果补齐
             meta_cache: dict = {}
             need_read: list = []
-            for p in all_paths:
+            for p, mtime in scanned.items():
                 if p in self._existing:
                     # 拷贝 + 补 _mtime（老版本持久化恢复的缓存可能缺 _mtime）
                     entry = dict(self._existing[p])
-                    if "_mtime" not in entry:
-                        try:
-                            entry["_mtime"] = os.path.getmtime(p)
-                        except OSError:
-                            pass
+                    if "_mtime" not in entry and mtime is not None:
+                        entry["_mtime"] = mtime
                     meta_cache[p] = entry
                 else:
-                    need_read.append(p)
+                    need_read.append((p, mtime))
+
+            # 进度：缓存命中的文件无需 TinyTag，直接算作「已就绪」。
+            total = len(scanned)
+            done = len(meta_cache)
+            self.progress.emit(done, total)
 
             # Step 3: 并行读剩下的
             if need_read:
-                def _read_one(p):
+                def _read_one(item):
+                    p, mtime = item
+                    entry = {"title": None, "artist": None, "album": None, "duration": None}
                     try:
-                        tag = TinyTag.get(p)
-                        entry = {
-                            "title": tag.title,
-                            "artist": tag.artist,
-                            "album": tag.album,
-                            "duration": f"{tag.duration:.1f}" if tag.duration is not None else None,
-                        }
-                        try:
-                            entry["_mtime"] = os.path.getmtime(p)
-                        except OSError:
-                            pass
-                        return p, entry
+                        # duration 在界面上只写不读（时长来自播放后端），却会让 TinyTag
+                        # 逐 4 字节、逐帧扫描整个 MP3，占添加文件夹耗时的 99% 以上。
+                        tag = TinyTag.get(p, duration=False)
+                        entry["title"] = tag.title
+                        entry["artist"] = tag.artist
+                        entry["album"] = tag.album
+                        # entry["duration"] = None → 「未解析」，需要时再惰性回填
                     except Exception:
-                        return p, {"title": None, "artist": None, "album": None, "duration": None}
+                        pass
+                    if mtime is not None:
+                        entry["_mtime"] = mtime
+                    return p, entry
 
-                workers = min(8, len(need_read))
+                # 2379 文件实测 1/2/4/8/16 线程 = 1880/1045/1022/1037/1044 ms，
+                # 4 线程即饱和；更多线程只增加并发读与调度开销。
+                workers = min(4, len(need_read))
+                # 约每 1% 上报一次，避免 2379 个文件产生同等数量的跨线程信号。
+                emit_every = max(1, total // 100)
                 with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures = {pool.submit(_read_one, p): p for p in need_read}
+                    futures = {pool.submit(_read_one, item): item[0] for item in need_read}
                     for fut in as_completed(futures):
+                        if self.isInterruptionRequested():
+                            # 取消：丢掉尚未开始的任务并立即退出。已在读的最多 4 个
+                            # 会随线程池 shutdown 被 join（每个仅数毫秒）。
+                            for pending in futures:
+                                pending.cancel()
+                            return
                         p, m = fut.result()
                         meta_cache[p] = m
+                        done += 1
+                        if done % emit_every == 0 or done == total:
+                            self.progress.emit(done, total)
 
-            self.finished_ok.emit(self._folder, len(all_paths), meta_cache)
+            # 全部命中缓存 / 恰好在 Step3 开始前被取消，也要尊重中断请求。
+            if self.isInterruptionRequested():
+                return
+            self.finished_ok.emit(self._folder, len(scanned), meta_cache)
         except Exception as e:
             self.failed.emit(str(e))
 
@@ -869,19 +935,28 @@ class MainWindow(QMainWindow):
         if not folder:
             return
 
-        # v1.0.1：后台线程扫描 + 等待对话框
+        # v1.0.1：后台线程扫描 + 等待对话框（v1.1.3 增加进度与可中断取消）
         dlg = QDialog(self)
         dlg.setWindowTitle(APP_NAME)
-        dlg.setFixedSize(320, 120)
+        dlg.setFixedSize(340, 168)
         dlg.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         dlg.setModal(True)
         layout = QVBoxLayout(dlg)
-        lbl = QLabel(f"正在分析文件夹内容...\n{folder}")
+        lbl = QLabel(folder)
         lbl.setAlignment(Qt.AlignCenter)
         lbl.setStyleSheet("color:#a6adc8;")
+        lbl.setWordWrap(True)
         layout.addWidget(lbl)
+        lbl_status = QLabel("正在分析文件夹内容...")
+        lbl_status.setAlignment(Qt.AlignCenter)
+        layout.addWidget(lbl_status)
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setTextVisible(False)
+        bar.setFixedHeight(8)
+        layout.addWidget(bar)
         btn = QPushButton("✕ 取消")
-        btn.clicked.connect(dlg.reject)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         btn_row.addWidget(btn)
@@ -892,33 +967,49 @@ class MainWindow(QMainWindow):
         worker = ScanWorker(folder, self.player._meta_cache, self)
         cancel_flag = {"cancelled": False}
 
+        # QThread 结束（run() 返回）后再删除对象：取消时线程仍在退出过程中，
+        # 直接 deleteLater() 有「Destroyed while thread is still running」风险。
+        worker.finished.connect(worker.deleteLater)
+
+        def on_progress(done: int, total: int):
+            if total <= 0:
+                bar.setValue(100)
+                lbl_status.setText("文件夹内没有音频文件")
+                return
+            bar.setValue(min(100, done * 100 // total))
+            lbl_status.setText(f"正在分析文件夹内容...  {done} / {total}")
+
         def on_ok(folder_path: str, count: int, meta_cache: dict):
             if cancel_flag["cancelled"]:
-                worker.deleteLater()
                 return
             # v1.0.2 优化2: 把 ScanWorker 预读的 metadata 填入 player 缓存
             self.player.preload_metadata(meta_cache)
-            added = self.player.add_folder_recursive(folder_path)
+            # v1.1.3: 直接复用扫描结果建组，不再二次 os.walk / listdir / isfile
+            added = self.player.add_groups_from_scan(meta_cache)
             dlg.accept()
-            worker.deleteLater()
             if added == 0:
                 QMessageBox.information(self, APP_NAME,
                                         f"未找到包含音频文件的子文件夹：\n{folder_path}")
 
         def on_err(msg: str):
             if cancel_flag["cancelled"]:
-                worker.deleteLater()
                 return
             dlg.reject()
             QMessageBox.warning(self, APP_NAME, f"扫描失败：{msg}")
-            worker.deleteLater()
 
         def on_cancel():
             cancel_flag["cancelled"] = True
+            # 真正中止后台读盘，而不是只在结果到达时忽略它。
+            worker.requestInterruption()
+            btn.setEnabled(False)
+            bar.setEnabled(False)
+            lbl_status.setText("正在取消...")
+            dlg.reject()
 
-        btn.clicked.connect(on_cancel)  # 先标记取消，再 reject dialog
+        btn.clicked.connect(on_cancel)
         worker.finished_ok.connect(on_ok)
         worker.failed.connect(on_err)
+        worker.progress.connect(on_progress)
 
         worker.start()
         dlg.exec()
@@ -927,9 +1018,12 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_add_files(self):
+        # 过滤器与 SUPPORTED_EXTENSIONS 共用唯一来源，避免列出后端无法解码的
+        # .m4a / .aac / .wma（旧版硬编码会列出，选中后被 add_files 静默丢弃）。
+        patterns = " ".join("*" + ext for ext in sorted(SUPPORTED_EXTENSIONS))
         files, _ = QFileDialog.getOpenFileNames(
             self, "选择音频文件", "",
-            "音频文件 (*.mp3 *.wav *.flac *.ogg *.m4a *.aac *.wma *.opus);;所有文件 (*.*)"
+            f"音频文件 ({patterns});;所有文件 (*.*)"
         )
         if files:
             self.player.add_files(files)
@@ -1211,11 +1305,26 @@ class MainWindow(QMainWindow):
             # v1.0.2: metadata 缓存持久化，重启后排序零 IO
             "meta_cache": self.player._meta_cache,
         }
+        path = settings_path()
+        tmp_file = path + ".tmp"
         try:
-            with open(settings_path(), "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            # 一次序列化 + 一次写入：json.dump(fp) 会产生上万次小 write，
+            # 实测比 dumps + 单次 write 慢 3 倍以上。紧凑输出：文件仅供程序
+            # 读写，缩进排版没有任何意义。
+            # 先写同目录临时文件再原子替换，避免崩溃时留下半截坏 JSON。
+            payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp_file, path)
+            tmp_file = None
         except OSError:
             pass
+        finally:
+            if tmp_file is not None:
+                try:
+                    os.remove(tmp_file)
+                except OSError:
+                    pass
 
     def _load_settings(self):
         path = settings_path()

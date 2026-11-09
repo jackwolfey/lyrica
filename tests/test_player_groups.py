@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from src.player import PlayMode, PlaylistGroup
+from src.player import MusicPlayer, PlayMode, PlaylistGroup
 
 
 def capture(signal):
@@ -75,6 +75,95 @@ def test_add_folder_twice_is_idempotent(player, make_tree):
     assert player.add_folder_recursive(str(base)) == 0
     assert player.get_group_count() == 1
     assert player.get_track_count() == 2
+
+
+# ==================== 复用扫描结果直接建组（v1.1.3） ====================
+
+
+def _scan_meta(paths):
+    """模拟 ScanWorker 的 finished_ok 参数：key 即扫描到的音频路径。"""
+    return {
+        p: {"title": None, "artist": None, "album": None,
+            "duration": None, "_mtime": 0.0}
+        for p in paths
+    }
+
+
+def test_add_groups_from_scan_matches_recursive(player, tmp_path):
+    """两条入口对同一棵目录树的分组、顺序、索引应完全一致。"""
+    def build(root):
+        write_album(root / "AlbumA", ["b.mp3", "a.mp3"])
+        write_album(root / "AlbumA" / "Disc2", ["d1.ogg"])
+        write_album(root / "AlbumB", ["c.wav", "cover.jpg"])
+        # 故意乱序传入，模拟 as_completed 的返回顺序
+        return [
+            str(root / "AlbumB" / "c.wav"),
+            str(root / "AlbumA" / "Disc2" / "d1.ogg"),
+            str(root / "AlbumA" / "b.mp3"),
+            str(root / "AlbumA" / "a.mp3"),
+        ]
+
+    tree1, tree2 = tmp_path / "left", tmp_path / "right"
+    paths2 = build(tree2)
+    build(tree1)
+
+    def snapshot(p):
+        return [(os.path.basename(g.folder_path),
+                 [os.path.basename(t) for t in g.tracks]) for g in p._groups]
+
+    other = MusicPlayer()
+    try:
+        assert player.add_folder_recursive(str(tree1)) == 4
+        assert other.add_groups_from_scan(_scan_meta(paths2)) == 4
+
+        assert snapshot(player) == snapshot(other) == [
+            ("AlbumA", ["a.mp3", "b.mp3"]), ("Disc2", ["d1.ogg"]), ("AlbumB", ["c.wav"]),
+        ]
+        assert player.get_track_count() == other.get_track_count() == 4
+        assert player.get_active_group_index() == other.get_active_group_index() == 0
+        assert player.get_current_index() == other.get_current_index() == 0
+    finally:
+        other._timer.stop()
+
+
+def test_add_groups_from_scan_is_idempotent(player, make_tree):
+    base = make_tree({"Album": ["a.mp3", "b.mp3"], "Album/Disc2": ["c.ogg"]})
+    scan = _scan_meta([
+        str(base / "Album" / "a.mp3"),
+        str(base / "Album" / "b.mp3"),
+        str(base / "Album" / "Disc2" / "c.ogg"),
+    ])
+
+    assert player.add_groups_from_scan(scan) == 3
+    assert player.add_groups_from_scan(scan) == 0
+    assert player.get_group_count() == 2
+    assert player.get_track_count() == 3
+
+
+def test_add_groups_from_scan_skips_files_already_in_groups(player, make_tree):
+    base = make_tree({"Album": ["a.mp3", "b.mp3"]})
+    assert player.add_folder_recursive(str(base)) == 2
+    new_file = base / "Album" / "c.flac"
+    new_file.write_bytes(b"")
+
+    scan = _scan_meta([
+        str(base / "Album" / "a.mp3"),
+        str(base / "Album" / "b.mp3"),
+        str(new_file),
+    ])
+    assert player.add_groups_from_scan(scan) == 1
+    assert player.get_track_count() == 3   # a/b 未重复收录，只补了 c.flac
+    assert [os.path.basename(t) for t in player.get_playlist()] == ["a.mp3", "b.mp3", "c.flac"]
+
+
+def test_add_groups_from_scan_empty_still_emits_signals(player):
+    groups_calls = capture_flag(player.groups_changed)
+    playlist_calls = capture_flag(player.playlist_changed)
+
+    assert player.add_groups_from_scan({}) == 0
+    assert groups_calls == [True]
+    assert playlist_calls == [True]
+    assert player.get_group_count() == 0
 
 
 def test_scan_folder_flat_filters_and_sorts(player, tmp_path):

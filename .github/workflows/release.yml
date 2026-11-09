@@ -175,7 +175,7 @@ jobs:
 
             > macOS 用户注意：首次运行若弹出"已损坏"，请 **右键 → 打开** → 点"打开"绕过 Gatekeeper。
             > 
-            > Linux 产物基于 ubuntu-20.04 (glibc 2.31) 构建，兼容 Ubuntu 20.04+、Debian 11+、Fedora 34+ 等主流发行版。
+            > Linux 产物基于 ubuntu-22.04 (glibc 2.35) 构建，兼容 Ubuntu 22.04+、Debian 12+ 等主流发行版。
 
             ### 🚀 安装
 

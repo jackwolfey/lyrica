@@ -2,7 +2,7 @@
 
 > 轻量级本地音乐播放器 · Python + PySide6 + just_playback
 > 
-> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → v1.0.4 → v1.0.5 → v1.1.0 → v1.1.1 → **v1.1.2**
+> 版本历史：v0.1 → v0.2 → v0.3 → v1.0 → v1.0.1 → v1.0.2 → v1.0.3 → v1.0.4 → v1.0.5 → v1.1.0 → v1.1.1 → v1.1.2 → **v1.1.3**
 
 ---
 
@@ -122,24 +122,30 @@ error_occurred     # str，错误消息
 | 播放控制 | 持有 MusicPlayer 实例，按钮点击调 player.play()/pause() 等 |
 | 右键菜单 | 标题栏（托盘开关 / 关于 / 退出）、播放组（添加文件夹 / 排序 / 上移下移）、曲目（排序） |
 | 系统托盘 | QSystemTrayIcon + 程序化 QPixmap 音符图标 |
-| 后台扫描 | ScanWorker(QThread) — 递归 walk + ThreadPoolExecutor 8线程读 metadata |
+| 后台扫描 | ScanWorker(QThread) — 一次 `os.scandir` 递归 + ThreadPoolExecutor 4 线程预读 metadata |
 | 持久化 | `lyrica_settings.json` — 窗口大小 / 播放状态 / 播放列表 / meta_cache |
 
-### ScanWorker 算法（v1.0.3 优化）
+### ScanWorker 算法（v1.0.3 增量并行，v1.1.3 合并遍历）
 
 ```
-Step 1: os.walk 快速收集所有音频文件路径
-Step 2: 已有 _meta_cache 的文件 → 直接复用，跳过 TinyTag
-Step 3: need_read 的 → ThreadPoolExecutor(max_workers=8) 并行读
+Step 1: 一次 os.scandir 递归，同时产出 {音频绝对路径: mtime}
+        （替代旧的 os.walk + 逐目录 listdir/isfile + 逐文件 getmtime）
+Step 2: 已有 _meta_cache 的文件 → 直接复用，跳过 TinyTag；缺 _mtime 的用 Step 1 结果补齐
+Step 3: need_read 的 → ThreadPoolExecutor(max_workers=4) 并行读，
+        TinyTag.get(p, duration=False) 跳过逐帧时长扫描
+Step 4: finished_ok 携带 meta_cache（其 key 即全部音频路径）→
+        player.add_groups_from_scan() 直接按 dirname 建组，不再二次遍历磁盘
 ```
 
 ---
 
 ## 五、持久化 JSON 结构
 
+> 下方为便于阅读的缩进示意；实际 `lyrica_settings.json` 是紧凑单行 JSON（无缩进、无多余空格），仅供程序读写。写入时先整体序列化到内存、单次写入同目录 `lyrica_settings.json.tmp`，再用 `os.replace()` 原子替换正本，崩溃不会留下半截坏 JSON；异常时静默降级并清理临时文件（v1.1.3）。
+
 ```json
 {
-  "version": "1.1.2",
+  "version": "1.1.3",
   "play_mode": "LIST_LOOP",
   "volume": 0.7,
   "window_size": {"w": 800, "h": 500},
@@ -161,6 +167,8 @@ Step 3: need_read 的 → ThreadPoolExecutor(max_workers=8) 并行读
   }
 }
 ```
+
+> `duration` 由 `MusicPlayer.get_track_metadata()` 在缓存未命中时写入；`ScanWorker` 预读的条目为 `null`，表示「未解析」。界面时长一律取自播放后端，该字段目前只写不读。
 
 **重启恢复链路**：
 ```
@@ -223,7 +231,7 @@ QApplication 启动
 ### v1.0.3
 > ScanWorker 增量并行 + meta_cache 持久化 + 强制退出
 - **ScanWorker 增量模式**：传入已有 `_meta_cache` → 跳过已缓存文件
-- **ThreadPoolExecutor 并行**：need_read 的文件 8 线程 TinyTag.get()，IO 密集并行加速
+- **ThreadPoolExecutor 并行**：need_read 的文件 8 线程 TinyTag.get()，IO 密集并行加速（v1.1.3 起收敛为 4 线程，实测 4 线程即饱和）
 - **meta_cache 持久化到 JSON**：重启后排序直接命中热缓存
 - **强制退出**：标题右键菜单「退出」+ Ctrl+Q，绕过最小化到托盘开关
 - 托盘通知缩短为 800ms
@@ -268,7 +276,7 @@ QApplication 启动
 - **修复**：在 `_connect_signals()` 中把 `track_changed` / `active_group_changed` 直连到两个列表 `viewport().update()`，信号到达即排队重绘并自动合并，千行量级仍是毫秒级开销
 - **回归测试**：新增 `test_playing_marker_viewport_update_on_track_change`，用事件过滤器统计 viewport 收到的 `UpdateRequest`，精确复现"目标行即选中行"场景（修复前收到 0 个重绘请求），测试总数 176 → 178
 
-### v1.1.2（当前）
+### v1.1.2
 > 性能与交互修复：大播放组切换卡顿、双击播放后列表重建/高亮沉底
 - **卡顿根因（三处叠加）**：① `_on_group_selected()` 在 `set_active_group()` 触发 `active_group_changed → _on_active_group_external` 刷新之后**又手动刷新一次**，每次切组重建两遍；② 曲目行用 `setItemWidget(_MarqueeLabel)`，208 行 = 208 个子控件 + 207 个 40ms 独立 `QTimer`，常驻事件循环（实测 1 秒内 10ms 探针只能触发 49 次，约 50% 饱和）；③ `_sync_track_row_colors()` 对每行调用 `setStyleSheet()`，新行全部触发样式重新 polish
 - **列表重建根因**：`play_track_in_group()` 无条件 emit `active_group_changed`，于是**每次双击播放同组曲目都会整表 clear + 重建**，滚动位置随之归零，`setCurrentRow()` 再把目标行滚到视口底部
@@ -280,6 +288,19 @@ QApplication 启动
 - **实测收益（离屏环境）**：切到 208 首长文件名播放组 250ms → **5.5ms**；常驻定时器 207 → **0**（按需 1 个）；事件循环探针 49/100 → **99/100**；同组双击重建 1 次 → **0 次**，滚动位置不变
 - **测试**：删除基于 itemWidget 的取色测试，新增 4 个回归用例（文本 item 无控件、超宽行默认文本清空、内容未变不重建、同组播放不滚动不重建），总数 178 → 181
 
+### v1.1.3（当前）
+> 「添加文件夹」扫描性能 + 配置写入健壮性 + 扫描进度/取消 + 发布前一致性收敛
+- **P0 去掉 duration 解析**：`ScanWorker` 改用 `TinyTag.get(p, duration=False)`。默认的 `duration=True` 会让 TinyTag 逐 4 字节、逐帧扫描整个 MP3（纯 Python 循环，GIL 下多线程几乎无收益），实测占首次添加耗时的绝大部分；而 `meta_cache["duration"]` 在生产代码中只写不读（界面时长来自 `just_playback`），属纯浪费。全量 2379 文件按路径比对确认 title/artist/album 零差异。`null` 定义为「未解析」，将来若要做时长排序再惰性回填。
+- **P1 合并重复遍历**：旧流程 `ScanWorker` 的 `os.walk` 结果只用于读 metadata，路径被丢弃；`on_ok` 又调 `add_folder_recursive()` 二次 walk + 逐目录 `listdir`/`isfile`，并因旧缓存缺 `_mtime` 而逐文件 `getmtime`。现改为一次 `os.scandir` 递归同时拿到路径 / `is_file` / `mtime`，`finished_ok` 携带的 `meta_cache` 的 key 直接供新增的 `MusicPlayer.add_groups_from_scan()` 按 `dirname` 建组（信号签名不变）。`add_folder_recursive()` 保留为公开 API，两者共用 `_append_groups_from_folder_map()`。
+- **P2 并发度 8 → 4**：2379 文件实测 1/2/4/8/16 线程 = 1880/1045/1022/1037/1044 ms，4 线程即饱和；更少的并发读也降低了冷盘 + 高并发读时非必现崩溃的概率。
+- **P3 进度反馈与可中断取消**：`ScanWorker` 新增 `progress = Signal(int, int)`，缓存命中的文件直接计入「已就绪」，Step3 按约 1% 节流上报（2379 文件实测 105 次而非 2380 次）；等待对话框加状态文本与 `QProgressBar`。取消按钮从「只忽略结果」改为调用 `QThread.requestInterruption()`，Step3 的 `as_completed` 循环检查中断、`cancel()` 未开始的 futures 并立即返回，不再 emit 完成信号（真实曲库实测取消后 0.1–0.4 s 退出，而非跑满 44 s 冷读）。对象清理改由 `worker.finished.connect(worker.deleteLater)` 负责，避免线程仍在退出过程中被销毁。**坑**：Qt 的 `isInterruptionRequested()` 仅在 QThread 真正 `start()` 后有效，同步直接调 `run()` 恒为 False，中断相关测试必须起真实线程。
+- **配置写入：紧凑 + 单次写 + 原子替换**：`_save_settings()` 原用 `json.dump(data, f, indent=2)` 直接写文件对象，600 KB 配置会产生上万次小 write；改为 `json.dumps(..., separators=(",", ":"))` 一次成型、单次 `write()` 到同目录 `.tmp`、再 `os.replace()` 原子替换，`finally` 清理临时文件，保留 `except OSError` 静默降级。数据内容与 `_load_settings()` 完全兼容、无需迁移；写盘 47 ms → **14 ms（3.4x）**、体积 582 KB → **479 KB（-17.7%）**，并获得「不会写坏正本」的原子性（未做 fsync，不保证断电持久性）。`.gitignore` 增加 `lyrica_settings.json.tmp`。注意此改动**没有**解决「明文可编辑」与「每次退出全量重写」——这两项仍留待冷热拆分 / SQLite 方案。
+- **文件格式对齐**：`_on_add_files()` 的文件对话框过滤器改为由 `SUPPORTED_EXTENSIONS` 动态生成，不再硬编码 `.m4a / .aac / .wma`（旧版会让用户选中后被 `add_files()` 静默丢弃），与 README 的支持格式说明及扫描过滤逻辑统一。
+- **发布一致性收敛**：`APP_VERSION`、macOS bundle 的 4 处版本号、第五节 JSON 示例统一为 `1.1.3`；修正 `release.yml` 的 Release 正文与第九节打包说明中残留的 `ubuntu-20.04 / glibc 2.31 / strip=True + upx=True` 描述——实际为 `ubuntu-22.04 / glibc 2.35`、Windows 关 strip、三端全关 UPX。
+- **实测**（`D:\01MUSIC`，58 目录 / 2379 音频 / 11 GiB，同进程交替对照取中位）：重复添加已缓存曲库 274 ms → **99 ms**（2.78x）；目录遍历 222 ms → **30 ms**；首次添加稳态 6.2 s → **1.7 s**（3.75x）。分组结果（55 组 / 2379 首，组序与组内曲目顺序）与旧实现完全一致。
+- **冷盘说明**：`D:` 为 5400rpm HDD，首次打开 2379 个文件需约 **44 s**（每文件一次随机寻道 ~10 ms，TinyTag 每文件多次 IO），上述 1.7 s 是文件已进入系统缓存后的稳态；两者相差 33x。机器可用内存仅 0.65 GB，缓存易被回收，冷态会反复出现。这是物理 IO 下限，不是解析开销；根本解法是渐进式加载（扫描完成即建组显示、metadata 后台补全），另可按需惰性读标签、将曲库迁至 SSD。另注：P2 的「4 线程饱和」结论来自热缓存 / CPU 密集场景，冷盘 IO 密集下 8 线程吞吐反而高约 1.7x。
+- **测试**：`test_scan_worker.py` 更新 duration / mtime / 异常路径契约并新增 1 例，`test_player_groups.py` 新增 4 例覆盖新入口的等价性、幂等、去重与空输入，另补 1 例「目录被删除仍静默按空处理」防回退；P3 再新增 6 例覆盖进度上报、缓存计入进度、真实线程中断、进度条更新、取消触发中断与晚到结果忽略；发布前补 1 例锁定「文件对话框过滤器与 `SUPPORTED_EXTENSIONS` 一致」。总数 181 → 194。
+
 ---
 
 ## 七、性能数据
@@ -290,7 +311,9 @@ QApplication 启动
 | 1000 首歌 title 首次排序 | 3-8s（冷缓存） | 摊进 ScanWorker 等待时间 |
 | 重启后排序 | 3-8s（空 cache） | **<10ms**（JSON 还原 cache） |
 | ScanWorker 重启后加同文件夹 | 串行重读全部 | **0.3ms**（全跳过） |
-| ScanWorker 首次（HDD） | 串行 TinyTag | **8 线程并行** |
+| ScanWorker 首次（HDD） | 串行 TinyTag | **4 线程并行 + 跳过 duration** |
+| 重复添加已缓存曲库（2379 首 / 11GiB） | 274ms（两次 walk + 逐条 stat） | **99ms**（一次 scandir + 复用结果建组） |
+| 首次添加 2379 首（稳态） | 6.2s（含逐帧时长解析） | **1.7s**（duration=False） |
 | QListWidget 1000 首刷新 | 500-1500ms | **<50ms**（setUpdatesEnabled） |
 | 切到 208 首长文件名播放组 | 250ms（双重建 + 208 控件） | **5.5ms**（纯 item + delegate） |
 | 208 行常驻定时器 | 207 个（40ms，事件循环 ~50% 饱和） | **0 个**（按需 1 个共享时钟） |
@@ -328,12 +351,13 @@ dist/Lyrica                Linux 可执行文件
 ```
 
 自动化：推送 `v*.*.*` tag 触发 `.github/workflows/release.yml`，在
-`windows-latest` / `macos-latest` / `ubuntu-20.04` 三端并行打包，
+`windows-latest` / `macos-latest` / `ubuntu-22.04` 三端并行打包，
 自动创建 GitHub Release 并上传 `Lyrica-Windows-x64.exe`、
 `Lyrica-macOS-arm64.zip`、`Lyrica-Linux-x86_64.tar.gz`。
 
 spec 关键配置：
-- `strip=True` + Windows/Linux `upx=True`：体积最小化（-60% ~ -80%）；macOS 关闭 UPX，避免 Gatekeeper 拦截压缩后的二进制
+- `strip`：Windows 关闭（PyInstaller 6.x 的 strip 会破坏打包内的 `python3xx.dll` / Qt 插件，CI 上的 MinGW strip 处理 PE 文件有已知问题），Linux/macOS 保留
+- `upx`：三端一律关闭（被压缩的 Python DLL / Qt 插件易触发杀软误报和加载失败，且 PyInstaller 仅在检测到 UPX 时才压缩，结果不可预期）
 - `excludes=[...]`：排除 QtWebEngine / matplotlib / numpy 等无关模块
 - `hiddenimports=[..., "_cffi_backend"]`：just_playback 的 miniaudio 走 cffi，需显式声明
 - `console=False`：无控制台黑框（调试时改 True 看堆栈）
@@ -344,7 +368,7 @@ spec 关键配置：
 
 ```bash
 pip install -r requirements-dev.txt
-QT_QPA_PLATFORM=offscreen python -m pytest            # 181 个用例
+QT_QPA_PLATFORM=offscreen python -m pytest            # 194 个用例
 QT_QPA_PLATFORM=offscreen python -m pytest --cov=src --cov=main   # 覆盖率 ~99%
 ```
 
