@@ -10,8 +10,8 @@ import sys
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import (
-    QAbstractAnimation, QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation,
-    QRect, QRectF, QSize, Qt, QThread, QTimer, QVariantAnimation, Signal, Slot,
+    QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation,
+    QRectF, QSize, Qt, QThread, QTimer, QVariantAnimation, Signal, Slot,
 )
 from PySide6.QtGui import (
     QAction, QColor, QIcon, QPainter, QPixmap, QPen, QShortcut, QKeySequence,
@@ -42,12 +42,10 @@ class PlayingItemDelegate(QStyledItemDelegate):
     _TEXT_RIGHT_PAD = 6
 
     def __init__(self, playing_index_getter=None, marquee_offset_getter=None,
-                 pulse_getter=None, hover_getter=None, parent=None):
+                 parent=None):
         super().__init__(parent)
         self._get_playing = playing_index_getter
         self._get_marquee_offset = marquee_offset_getter
-        self._get_pulse = pulse_getter
-        self._get_hover = hover_getter
 
     def initStyleOption(self, option, index):
         # 关键：QStyledItemDelegate.paint() 内部会再次调用 initStyleOption()，
@@ -66,17 +64,6 @@ class PlayingItemDelegate(QStyledItemDelegate):
             option.text = ""
 
     def paint(self, painter, option, index):
-        # 悬停淡入：画在基类之前，避免给文字蒙上一层白
-        if self._get_hover:
-            hrow, halpha = self._get_hover()
-            if (hrow == index.row() and halpha > 0.01
-                    and not option.state & QStyle.State_Selected):
-                painter.save()
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(255, 255, 255, int(16 * halpha)))
-                painter.drawRoundedRect(option.rect.adjusted(3, 1, -3, -1), 6, 6)
-                painter.restore()
-
         offset = self._get_marquee_offset() if self._get_marquee_offset else None
         text = index.data(Qt.DisplayRole) or ""
         if offset is not None and text:
@@ -110,10 +97,7 @@ class PlayingItemDelegate(QStyledItemDelegate):
         playing_row = self._get_playing() if self._get_playing else None
         if playing_row is not None and index.row() == playing_row:
             rect = option.rect.adjusted(3, 2, -3, -2)
-            color = QColor("#89b4fa")  # Catppuccin blue
-            pulse = self._get_pulse() if self._get_pulse else 1.0
-            color.setAlpha(int(120 + 135 * pulse))
-            pen = QPen(color)
+            pen = QPen(QColor("#89b4fa"))  # Catppuccin blue
             pen.setWidth(2)
             pen.setCosmetic(True)          # 缩放时线宽不变
             painter.setPen(pen)
@@ -200,82 +184,6 @@ class _MarqueeLabel(QLabel):
         cur_x = (label_w - text_w) // 2 - self._offset
         painter.drawText(int(cur_x), v_center, text)
         painter.drawText(int(cur_x + text_w + gap), v_center, text)
-        painter.end()
-
-
-class _GlowButton(QPushButton):
-    """点击时背景泛起一次柔和光晕（240 ms 衰减），不做几何缩放，
-    避免改变布局或触发重排。"""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._glow = 0.0
-        self._anim = QVariantAnimation(self)
-        self._anim.setDuration(240)
-        self._anim.setStartValue(1.0)
-        self._anim.setEndValue(0.0)
-        self._anim.valueChanged.connect(self._set_glow)
-
-    def _set_glow(self, value):
-        self._glow = float(value)
-        self.update()
-
-    def flash(self):
-        self._anim.stop()
-        self._anim.start()
-
-    def paintEvent(self, event):
-        if self._glow > 0.01:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(137, 180, 250, int(90 * self._glow)))
-            painter.drawRoundedRect(self.rect().adjusted(2, 2, -2, -2), 8, 8)
-            painter.end()
-        super().paintEvent(event)
-
-
-class _GroupListWidget(QListWidget):
-    """播放组列表：用一个可缓动移动的圆角"滑块"表示当前选中组。
-
-    QSS 里的原生实心选中背景在 MainWindow 中被覆盖为透明，改由这里自绘，
-    这样切组时高亮块可以从旧行平滑滑到新行，而不是瞬间跳变。
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._pill_pos: Optional[float] = None
-
-    def set_pill_pos(self, pos):
-        old = self._pill_rect()
-        self._pill_pos = pos
-        new = self._pill_rect()
-        if old is not None:
-            self.viewport().update(old)
-        if new is not None:
-            self.viewport().update(new)
-
-    def _pill_rect(self):
-        if self._pill_pos is None or self.count() == 0:
-            return None
-        first = self.visualRect(self.model().index(0, 0))
-        if not first.isValid():
-            return None
-        row_h = first.height()
-        y = first.top() + self._pill_pos * row_h
-        return QRect(int(2), int(y) + 1,
-                     max(0, self.viewport().width() - 4), max(0, row_h - 2))
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        rect = self._pill_rect()
-        if rect is None or not self.isVisible():
-            return
-        painter = QPainter(self.viewport())
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(137, 180, 250, 150), 1))
-        painter.setBrush(QColor(137, 180, 250, 60))
-        painter.drawRoundedRect(rect, 5, 5)
         painter.end()
 
 
@@ -591,32 +499,9 @@ class MainWindow(QMainWindow):
         # 避免"播放同组曲目 / 重复点击同组"把整张列表推倒重来。
         self._rendered_tracks_key = None
 
-        # v1.1.4: 界面动效（呼吸描边 / 平滑滚动 / 悬停淡入 / 按钮光晕）
-        # 统一由窗口持有动画对象，禁止每个控件自带定时器。
+        # v1.1.4: 界面动效开关。统一由窗口持有动画对象，禁止每个控件自带定时器。
         self._animations_enabled: bool = True
-        self._pulse: float = 1.0
-        self._pulse_anim = QVariantAnimation(self)
-        self._pulse_anim.setStartValue(0.0)
-        self._pulse_anim.setEndValue(1.0)
-        self._pulse_anim.setDuration(1600)
-        self._pulse_anim.setLoopCount(-1)
-        self._pulse_anim.setEasingCurve(QEasingCurve.InOutSine)
-        self._pulse_anim.valueChanged.connect(self._on_pulse_value)
-        self._hover_row: int = -1
-        self._hover_alpha: float = 0.0
-        self._hover_anim = QVariantAnimation(self)
-        self._hover_anim.setDuration(120)
-        self._hover_anim.setStartValue(0.0)
-        self._hover_anim.setEndValue(1.0)
-        self._hover_anim.valueChanged.connect(self._on_hover_value)
-        self._scroll_anim: Optional[QPropertyAnimation] = None
-
-        # v1.1.4 第二批：组列表选中滑块 + 托盘淡入
-        self._group_pill_pos: Optional[float] = None
-        self._group_pill_anim = QVariantAnimation(self)
-        self._group_pill_anim.setDuration(160)
-        self._group_pill_anim.setEasingCurve(QEasingCurve.OutCubic)
-        self._group_pill_anim.valueChanged.connect(self._on_group_pill_value)
+        # 托盘恢复淡入
         self._fade_anim = QPropertyAnimation(self, b"windowOpacity", self)
         self._fade_anim.setDuration(160)
         self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
@@ -703,7 +588,7 @@ class MainWindow(QMainWindow):
 
         self.btn_prev = QPushButton("⏮\uFE0F")
         self.btn_prev.setFixedSize(32, 26)
-        self.btn_play = _GlowButton("▶\uFE0F")
+        self.btn_play = QPushButton("▶\uFE0F")
         self.btn_play.setFixedSize(50, 26)
         self.btn_play.setDefault(True)
         self.btn_next = QPushButton("⏭\uFE0F")
@@ -770,21 +655,12 @@ class MainWindow(QMainWindow):
         groups_title.setFont(gf)
         groups_title.setStyleSheet("color:#a6adc8; padding: 2px;")
 
-        self.groups_list = _GroupListWidget()
+        self.groups_list = QListWidget()
         self.groups_list.setAlternatingRowColors(True)
         self.groups_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.groups_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.groups_list.customContextMenuRequested.connect(self._show_groups_menu)
         self.groups_list.currentRowChanged.connect(self._on_group_selected)
-        self.groups_list.currentRowChanged.connect(self._on_group_pill_changed)
-        # 选中态改由 _GroupListWidget 自绘滑块（可缓动），关掉 QSS 的实心蓝底
-        self.groups_list.setStyleSheet(
-            "QListWidget { outline: 0; }"
-            "QListWidget::item:selected { background: transparent;"
-            " border: 1px solid transparent; color: #cdd6f4; }"
-            "QListWidget::item:selected:hover { background: transparent;"
-            " border: 1px solid transparent; }"
-        )
 
         left_container = QFrame()
         left_container.setObjectName("leftPanel")
@@ -815,17 +691,14 @@ class MainWindow(QMainWindow):
         # v1.1: 接 delegate —— 给"正在播放"项画空心圆角矩形
         # groups_list: 哪一组包含当前播放的曲目
         # tracks_list: 当前 active_group 内哪首正在播放（若不在当前组则不高亮）
-        self.tracks_list.setMouseTracking(True)   # 悬停淡入需要 itemEntered
         self.groups_list.setItemDelegate(
-            PlayingItemDelegate(self._playing_group_row, pulse_getter=lambda: self._pulse)
+            PlayingItemDelegate(self._playing_group_row)
         )
         # 曲目列表额外接管 marquee：偏移由窗口级单一 QTimer 下发
         self.tracks_list.setItemDelegate(
             PlayingItemDelegate(
                 self._playing_track_row,
                 lambda: self._marquee_offset,
-                pulse_getter=lambda: self._pulse,
-                hover_getter=lambda: (self._hover_row, self._hover_alpha),
             )
         )
         self.tracks_list.setUniformItemSizes(True)  # 行高一致 → 布局/滚动更快
@@ -880,11 +753,6 @@ class MainWindow(QMainWindow):
             self.player.track_changed.connect(vp.update)
             self.player.active_group_changed.connect(vp.update)
 
-        # v1.1.4: 曲目列表悬停淡入 + 播放键点击光晕
-        self.tracks_list.itemEntered.connect(self._on_track_hovered)
-        self.tracks_list.viewport().installEventFilter(self)
-        self.btn_play.clicked.connect(self._flash_play_button)
-
         # v1.1.4: marquee 跨度只统计可视行，滚动后可视集合变化需要重算
         self.tracks_list.verticalScrollBar().valueChanged.connect(
             self._on_tracks_scrolled
@@ -927,11 +795,6 @@ class MainWindow(QMainWindow):
             if event.button() == Qt.LeftButton:
                 self._scroll_to_playing()
                 return True  # 吃掉左键，不触发任何默认行为
-        # 鼠标离开曲目列表 → 清除悬停高亮（否则最后一行会一直亮着）
-        tracks = getattr(self, "tracks_list", None)
-        if tracks is not None and obj is tracks.viewport() \
-                and event.type() == QEvent.Leave:
-            self._clear_track_hover()
         return super().eventFilter(obj, event)
 
     @Slot()
@@ -958,7 +821,9 @@ class MainWindow(QMainWindow):
             self.tracks_list.blockSignals(True)
             self.tracks_list.setCurrentRow(ti)
             self.tracks_list.blockSignals(False)
-            self._smooth_scroll_to(ti)
+            self.tracks_list.scrollToItem(
+                self.tracks_list.item(ti), QListWidget.EnsureVisible
+            )
 
     # ==================== 系统托盘（v1.0 新增） ====================
 
@@ -1070,7 +935,7 @@ class MainWindow(QMainWindow):
         act_tray.toggled.connect(self.set_minimize_to_tray)
         menu.addAction(act_tray)
 
-        # v1.1.4：界面动效开关（呼吸描边 / 平滑滚动 / 悬停 / 光晕）
+        # v1.1.4：界面动效开关（音量滑块缓动 / 托盘与关于框淡入）
         act_anim = QAction("启用界面动画", self, checkable=True)
         act_anim.setChecked(self._animations_enabled)
         act_anim.toggled.connect(self.set_animations_enabled)
@@ -1348,37 +1213,7 @@ class MainWindow(QMainWindow):
             self.groups_list.blockSignals(True)
             self.groups_list.setCurrentRow(group_index)
             self.groups_list.blockSignals(False)
-            # 信号被 block，滑块动画需要手动触发
-            self._set_group_pill(group_index)
         self._refresh_tracks_list()
-
-    @Slot(int)
-    def _on_group_pill_changed(self, row: int):
-        self._set_group_pill(row)
-
-    def _on_group_pill_value(self, value):
-        self._group_pill_pos = float(value)
-        self.groups_list.set_pill_pos(self._group_pill_pos)
-
-    def _set_group_pill(self, row: int, animate: bool = True):
-        """选中滑块跟随当前组；关闭动效或首次布局时直接落位。"""
-        if row < 0:
-            self._group_pill_anim.stop()
-            self._group_pill_pos = None
-            self.groups_list.set_pill_pos(None)
-            return
-        current = self._group_pill_pos
-        if not animate or not self._animations_enabled or current is None:
-            self._group_pill_anim.stop()
-            self._group_pill_pos = float(row)
-            self.groups_list.set_pill_pos(float(row))
-            return
-        if abs(current - row) < 0.01:
-            return
-        self._group_pill_anim.stop()
-        self._group_pill_anim.setStartValue(current)
-        self._group_pill_anim.setEndValue(float(row))
-        self._group_pill_anim.start()
 
     @Slot(QListWidgetItem)
     def _on_track_double_clicked(self, item: QListWidgetItem):
@@ -1409,12 +1244,6 @@ class MainWindow(QMainWindow):
     def _on_state_changed(self, playing: bool):
         self.btn_play.setText("⏸" if playing else "▶\uFE0F")
         self.btn_play.setToolTip("暂停" if playing else "播放")
-        if playing:
-            self._start_pulse()
-        else:
-            self._stop_pulse()
-
-    # ---------- v1.1.4: 动效辅助（呼吸描边 / 悬停 / 平滑滚动） ----------
 
     def _playing_group_row(self):
         flat = self.player.get_current_index()
@@ -1432,124 +1261,11 @@ class MainWindow(QMainWindow):
             return None
         return self.player.get_track_index_in_group(flat)
 
-    def _repaint_track_row(self, row: int):
-        if row is None or row < 0 or row >= self.tracks_list.count():
-            return
-        idx = self.tracks_list.model().index(row, 0)
-        if idx.isValid():
-            self.tracks_list.viewport().update(self.tracks_list.visualRect(idx))
-
-    def _repaint_playing_rows(self):
-        """只重绘"正在播放"的一两行，而不是整张表。"""
-        for view, row in ((self.groups_list, self._playing_group_row()),
-                          (self.tracks_list, self._playing_track_row())):
-            if row is None or row < 0 or row >= view.count():
-                continue
-            idx = view.model().index(row, 0)
-            if idx.isValid():
-                view.viewport().update(view.visualRect(idx))
-
-    def _on_pulse_value(self, value):
-        value = float(value)
-        # 呼吸是慢动画（1.6 s 一个周期），60 fps 全量重绘没有视觉收益，
-        # 只在与上次绘制差够大时重绘（约 20 fps），常驻开销降到 ~0.3%。
-        if abs(value - self._pulse) < 0.03:
-            return
-        self._pulse = value
-        self._repaint_playing_rows()
-
-    def _start_pulse(self):
-        if not self._animations_enabled:
-            self._set_pulse_static()
-            return
-        if self._pulse_anim.state() != QAbstractAnimation.Running:
-            self._pulse_anim.start()
-
-    def _stop_pulse(self):
-        self._pulse_anim.stop()
-        self._set_pulse_static()
-
-    def _set_pulse_static(self):
-        if self._pulse != 1.0:
-            self._pulse = 1.0
-            self._repaint_playing_rows()
-
-    def _on_hover_value(self, value):
-        self._hover_alpha = float(value)
-        self._repaint_track_row(self._hover_row)
-
-    @Slot(QListWidgetItem)
-    def _on_track_hovered(self, item: QListWidgetItem):
-        row = self.tracks_list.row(item)
-        if row == self._hover_row:
-            return
-        old = self._hover_row
-        self._hover_row = row
-        self._hover_anim.stop()
-        if self._animations_enabled:
-            self._hover_alpha = 0.0
-            self._hover_anim.start()
-        else:
-            self._hover_alpha = 1.0
-        self._repaint_track_row(old)
-        self._repaint_track_row(row)
-
-    def _clear_track_hover(self):
-        old = self._hover_row
-        self._hover_row = -1
-        self._hover_anim.stop()
-        self._hover_alpha = 0.0
-        self._repaint_track_row(old)
-
-    def _flash_play_button(self):
-        if self._animations_enabled:
-            self.btn_play.flash()
-
-    def _smooth_scroll_to(self, row: int, center: bool = True):
-        """把指定行滚到视口中央。行已完全可见时不动，避免列表无谓跳动。"""
-        view = self.tracks_list
-        if row < 0 or row >= view.count():
-            return
-        idx = view.model().index(row, 0)
-        if not idx.isValid():
-            return
-        rect = view.visualRect(idx)
-        vp_h = view.viewport().height()
-        if 0 <= rect.top() and rect.bottom() < vp_h:
-            return
-        sb = view.verticalScrollBar()
-        target = sb.value() + rect.center().y() - vp_h // 2 if center \
-            else sb.value() + rect.top()
-        target = max(sb.minimum(), min(sb.maximum(), target))
-        if not self._animations_enabled:
-            sb.setValue(target)
-            return
-        if self._scroll_anim is None:
-            anim = QPropertyAnimation(sb, b"value", self)
-            anim.setDuration(150)
-            anim.setEasingCurve(QEasingCurve.OutCubic)
-            self._scroll_anim = anim
-        self._scroll_anim.stop()
-        self._scroll_anim.setStartValue(sb.value())
-        self._scroll_anim.setEndValue(target)
-        self._scroll_anim.start()
-
     def set_animations_enabled(self, enabled: bool):
         self._animations_enabled = bool(enabled)
         if not enabled:
-            self._pulse_anim.stop()
-            self._pulse = 1.0
-            self._hover_anim.stop()
-            self._clear_track_hover()
-            if self._scroll_anim is not None:
-                self._scroll_anim.stop()
-            self._group_pill_anim.stop()
-            self._set_group_pill(self.groups_list.currentRow(), animate=False)
             self._fade_anim.stop()
             self.setWindowOpacity(1.0)
-            self._repaint_playing_rows()
-        elif self.player.is_playing():
-            self._start_pulse()   # 重新开启时立即恢复呼吸效果
         self._save_settings()
 
     @Slot(int)
@@ -1579,19 +1295,10 @@ class MainWindow(QMainWindow):
                 self.groups_list.blockSignals(True)
                 self.groups_list.setCurrentRow(gi)
                 self.groups_list.blockSignals(False)
-                self._set_group_pill(gi)
             if 0 <= ti < self.tracks_list.count():
-                sb = self.tracks_list.verticalScrollBar()
-                scroll_before = sb.value()
                 self.tracks_list.blockSignals(True)
                 self.tracks_list.setCurrentRow(ti)
                 self.tracks_list.blockSignals(False)
-                # setCurrentRow 自带"确保可见"的瞬时滚动，先还原再平滑滚过去，
-                # 否则动画看不到、列表还会闪一下。
-                sb.setValue(scroll_before)
-                self._smooth_scroll_to(ti)
-            if self.player.is_playing():
-                self._start_pulse()
         else:
             self.lbl_title.setText("未加载曲目")
             self.lbl_title.setToolTip("")
@@ -1610,8 +1317,6 @@ class MainWindow(QMainWindow):
         if 0 <= cur < self.groups_list.count(): self.groups_list.setCurrentRow(cur)
         self.groups_list.setUpdatesEnabled(True)
         self.groups_list.blockSignals(False)
-        # 列表被重建，滑块坐标失效 → 直接落位到当前组，不做动画
-        self._set_group_pill(self.groups_list.currentRow(), animate=False)
         self._refresh_tracks_list()
 
     @Slot()
@@ -1661,10 +1366,12 @@ class MainWindow(QMainWindow):
         self.tracks_list.blockSignals(False)
 
         # 同组内的结构性变化（排序等）保持原滚动位置；
-        # 切组时回到顶部，再平滑滑到正在播放行（而不是瞬移）。
+        # 切组时回到顶部，再把正在播放行滚到可见。
         self.tracks_list.verticalScrollBar().setValue(scroll)
         if ti_target is not None:
-            self._smooth_scroll_to(ti_target)
+            self.tracks_list.scrollToItem(
+                self.tracks_list.item(ti_target), QListWidget.EnsureVisible
+            )
         self._update_marquee()
 
     # ==================== 曲目行 marquee（v1.1.2 单时钟版） ====================
