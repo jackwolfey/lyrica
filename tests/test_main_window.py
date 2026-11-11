@@ -1380,3 +1380,35 @@ def test_delegate_paints_pulse_and_hover(window, tmp_path):
     window.tracks_list.viewport().render(pixmap)
 
     assert not pixmap.isNull()
+
+
+def test_group_pill_snaps_on_refresh_and_follows_selection(window, tmp_path):
+    for i in range(3):
+        make_files(tmp_path / f"album{i}", ["a.mp3"])
+    window.player.add_folder_recursive(str(tmp_path))
+    window._refresh_groups_list()
+    window.set_animations_enabled(False)
+
+    assert window._group_pill_pos == float(window.groups_list.currentRow())
+
+    window.groups_list.setCurrentRow(2)
+    assert window._group_pill_pos == 2.0
+
+    window.groups_list.setCurrentRow(0)
+    assert window._group_pill_pos == 0.0
+
+
+def test_volume_slider_tracks_value_when_animations_disabled(window):
+    window.set_animations_enabled(False)
+
+    window.slider_volume.setValue(25)
+
+    assert window.slider_volume._ratio == pytest.approx(0.25)
+
+
+def test_progress_slider_never_interpolates(window):
+    """进度条跟随音频时钟，必须立即反映数值，否则会显得"追不上"。"""
+    window.slider_progress.setValue(500)
+
+    assert window.slider_progress._animated is False
+    assert window.slider_progress._ratio == pytest.approx(0.5)

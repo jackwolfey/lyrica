@@ -10,8 +10,8 @@ import sys
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import (
-    QAbstractAnimation, QEasingCurve, QEvent, QPoint, QPropertyAnimation,
-    QSize, Qt, QThread, QTimer, QVariantAnimation, Signal, Slot,
+    QAbstractAnimation, QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation,
+    QRect, QRectF, QSize, Qt, QThread, QTimer, QVariantAnimation, Signal, Slot,
 )
 from PySide6.QtGui import (
     QAction, QColor, QIcon, QPainter, QPixmap, QPen, QShortcut, QKeySequence,
@@ -235,6 +235,108 @@ class _GlowButton(QPushButton):
         super().paintEvent(event)
 
 
+class _GroupListWidget(QListWidget):
+    """播放组列表：用一个可缓动移动的圆角"滑块"表示当前选中组。
+
+    QSS 里的原生实心选中背景在 MainWindow 中被覆盖为透明，改由这里自绘，
+    这样切组时高亮块可以从旧行平滑滑到新行，而不是瞬间跳变。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pill_pos: Optional[float] = None
+
+    def set_pill_pos(self, pos):
+        old = self._pill_rect()
+        self._pill_pos = pos
+        new = self._pill_rect()
+        if old is not None:
+            self.viewport().update(old)
+        if new is not None:
+            self.viewport().update(new)
+
+    def _pill_rect(self):
+        if self._pill_pos is None or self.count() == 0:
+            return None
+        first = self.visualRect(self.model().index(0, 0))
+        if not first.isValid():
+            return None
+        row_h = first.height()
+        y = first.top() + self._pill_pos * row_h
+        return QRect(int(2), int(y) + 1,
+                     max(0, self.viewport().width() - 4), max(0, row_h - 2))
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        rect = self._pill_rect()
+        if rect is None or not self.isVisible():
+            return
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(137, 180, 250, 150), 1))
+        painter.setBrush(QColor(137, 180, 250, 60))
+        painter.drawRoundedRect(rect, 5, 5)
+        painter.end()
+
+
+class _SmoothSlider(QSlider):
+    """自绘滑块：轨道/已播放部分/圆形手柄与 Catppuccin 主题一致。
+
+    animated=True 时数值变化的填充段用 90 ms 缓动跟上（音量）；
+    进度条必须 animate=False —— 它跟随音频时钟，插值会显得"追不上"。
+    """
+
+    def __init__(self, orientation, animated=False, enabled_getter=None, parent=None):
+        super().__init__(orientation, parent)
+        self._animated = animated
+        self._enabled_getter = enabled_getter
+        self._ratio = self._value_ratio()
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(90)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.valueChanged.connect(self._set_ratio)
+        self.valueChanged.connect(self._on_value_changed)
+
+    def _value_ratio(self):
+        span = self.maximum() - self.minimum()
+        return 0.0 if span <= 0 else (self.value() - self.minimum()) / span
+
+    def _on_value_changed(self, _value):
+        target = self._value_ratio()
+        enabled = self._animated and (
+            self._enabled_getter() if self._enabled_getter else True
+        )
+        if not enabled:
+            self._anim.stop()
+            self._set_ratio(target)
+            return
+        self._anim.stop()
+        self._anim.setStartValue(self._ratio)
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def _set_ratio(self, value):
+        self._ratio = float(value)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        left, right = 6.0, self.width() - 6.0
+        cy = self.height() / 2
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#313244"))
+        painter.drawRoundedRect(QRectF(left, cy - 2, right - left, 4), 2, 2)
+
+        fill = (right - left) * self._ratio
+        if fill > 0:
+            painter.setBrush(QColor("#89b4fa"))
+            painter.drawRoundedRect(QRectF(left, cy - 2, fill, 4), 2, 2)
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawEllipse(QPointF(left + fill, cy), 6, 6)
+        painter.end()
+
+
 APP_NAME = "Lyrica"
 APP_VERSION = "1.1.3"
 SETTINGS_FILENAME = "lyrica_settings.json"
@@ -406,6 +508,9 @@ class AboutDialog(QDialog):
         self.setWindowTitle(f"关于 {APP_NAME}")
         self.setFixedSize(360, 220)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self._fade = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade.setDuration(140)
+        self._fade.setEasingCurve(QEasingCurve.OutCubic)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 16)
@@ -445,6 +550,18 @@ class AboutDialog(QDialog):
         layout.addSpacing(6)
         layout.addWidget(sep)
         layout.addLayout(btn_row)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        parent = self.parent()
+        if parent is not None and not getattr(parent, "_animations_enabled", True):
+            self.setWindowOpacity(1.0)
+            return
+        self._fade.stop()
+        self.setWindowOpacity(0.0)
+        self._fade.setStartValue(0.0)
+        self._fade.setEndValue(1.0)
+        self._fade.start()
 
 
 # ============ 主窗口 ============
@@ -493,6 +610,16 @@ class MainWindow(QMainWindow):
         self._hover_anim.setEndValue(1.0)
         self._hover_anim.valueChanged.connect(self._on_hover_value)
         self._scroll_anim: Optional[QPropertyAnimation] = None
+
+        # v1.1.4 第二批：组列表选中滑块 + 托盘淡入
+        self._group_pill_pos: Optional[float] = None
+        self._group_pill_anim = QVariantAnimation(self)
+        self._group_pill_anim.setDuration(160)
+        self._group_pill_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._group_pill_anim.valueChanged.connect(self._on_group_pill_value)
+        self._fade_anim = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_anim.setDuration(160)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         # 系统托盘（可选）
         self._tray: Optional[QSystemTrayIcon] = None
@@ -552,7 +679,7 @@ class MainWindow(QMainWindow):
         self.lbl_current = QLabel("00:00")
         self.lbl_current.setFixedWidth(40)
         self.lbl_current.setAlignment(Qt.AlignCenter)
-        self.slider_progress = QSlider(Qt.Horizontal)
+        self.slider_progress = _SmoothSlider(Qt.Horizontal)
         self.slider_progress.setRange(0, 1000)
         self.slider_progress.setValue(0)
         self.lbl_total = QLabel("00:00")
@@ -601,7 +728,10 @@ class MainWindow(QMainWindow):
         right_section.setSpacing(4);
         right_section.setContentsMargins(0, 0, 0, 0)
         right_section.addWidget(QLabel("🔊"))
-        self.slider_volume = QSlider(Qt.Horizontal)
+        self.slider_volume = _SmoothSlider(
+            Qt.Horizontal, animated=True,
+            enabled_getter=lambda: self._animations_enabled,
+        )
         self.slider_volume.setRange(0, 100)
         self.slider_volume.setValue(70)
         self.slider_volume.setFixedWidth(100)
@@ -640,12 +770,21 @@ class MainWindow(QMainWindow):
         groups_title.setFont(gf)
         groups_title.setStyleSheet("color:#a6adc8; padding: 2px;")
 
-        self.groups_list = QListWidget()
+        self.groups_list = _GroupListWidget()
         self.groups_list.setAlternatingRowColors(True)
         self.groups_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.groups_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.groups_list.customContextMenuRequested.connect(self._show_groups_menu)
         self.groups_list.currentRowChanged.connect(self._on_group_selected)
+        self.groups_list.currentRowChanged.connect(self._on_group_pill_changed)
+        # 选中态改由 _GroupListWidget 自绘滑块（可缓动），关掉 QSS 的实心蓝底
+        self.groups_list.setStyleSheet(
+            "QListWidget { outline: 0; }"
+            "QListWidget::item:selected { background: transparent;"
+            " border: 1px solid transparent; color: #cdd6f4; }"
+            "QListWidget::item:selected:hover { background: transparent;"
+            " border: 1px solid transparent; }"
+        )
 
         left_container = QFrame()
         left_container.setObjectName("leftPanel")
@@ -888,8 +1027,20 @@ class MainWindow(QMainWindow):
             self.showNormal()
         else:
             self.show()
+        self._fade_in_window()
         self.activateWindow()
         self.raise_()
+
+    def _fade_in_window(self):
+        """从托盘恢复时淡入（160 ms）。不改变布局，也不影响首次启动。"""
+        if not self._animations_enabled:
+            self.setWindowOpacity(1.0)
+            return
+        self._fade_anim.stop()
+        self.setWindowOpacity(0.0)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.start()
 
     def _tray_quit(self):
         self._save_settings()
@@ -1197,7 +1348,37 @@ class MainWindow(QMainWindow):
             self.groups_list.blockSignals(True)
             self.groups_list.setCurrentRow(group_index)
             self.groups_list.blockSignals(False)
+            # 信号被 block，滑块动画需要手动触发
+            self._set_group_pill(group_index)
         self._refresh_tracks_list()
+
+    @Slot(int)
+    def _on_group_pill_changed(self, row: int):
+        self._set_group_pill(row)
+
+    def _on_group_pill_value(self, value):
+        self._group_pill_pos = float(value)
+        self.groups_list.set_pill_pos(self._group_pill_pos)
+
+    def _set_group_pill(self, row: int, animate: bool = True):
+        """选中滑块跟随当前组；关闭动效或首次布局时直接落位。"""
+        if row < 0:
+            self._group_pill_anim.stop()
+            self._group_pill_pos = None
+            self.groups_list.set_pill_pos(None)
+            return
+        current = self._group_pill_pos
+        if not animate or not self._animations_enabled or current is None:
+            self._group_pill_anim.stop()
+            self._group_pill_pos = float(row)
+            self.groups_list.set_pill_pos(float(row))
+            return
+        if abs(current - row) < 0.01:
+            return
+        self._group_pill_anim.stop()
+        self._group_pill_anim.setStartValue(current)
+        self._group_pill_anim.setEndValue(float(row))
+        self._group_pill_anim.start()
 
     @Slot(QListWidgetItem)
     def _on_track_double_clicked(self, item: QListWidgetItem):
@@ -1237,13 +1418,14 @@ class MainWindow(QMainWindow):
 
     def _playing_group_row(self):
         flat = self.player.get_current_index()
-        if flat < 0:
+        # current_index 在"仅添加曲目、尚未播放"时也是 0，此时不该画播放描边
+        if flat < 0 or not (self.player.is_playing() or self.player.is_paused()):
             return None
         return self.player.get_group_of_track(flat)
 
     def _playing_track_row(self):
         flat = self.player.get_current_index()
-        if flat < 0:
+        if flat < 0 or not (self.player.is_playing() or self.player.is_paused()):
             return None
         gi = self.player.get_group_of_track(flat)
         if gi != self.player.get_active_group_index():
@@ -1361,6 +1543,10 @@ class MainWindow(QMainWindow):
             self._clear_track_hover()
             if self._scroll_anim is not None:
                 self._scroll_anim.stop()
+            self._group_pill_anim.stop()
+            self._set_group_pill(self.groups_list.currentRow(), animate=False)
+            self._fade_anim.stop()
+            self.setWindowOpacity(1.0)
             self._repaint_playing_rows()
         elif self.player.is_playing():
             self._start_pulse()   # 重新开启时立即恢复呼吸效果
@@ -1393,6 +1579,7 @@ class MainWindow(QMainWindow):
                 self.groups_list.blockSignals(True)
                 self.groups_list.setCurrentRow(gi)
                 self.groups_list.blockSignals(False)
+                self._set_group_pill(gi)
             if 0 <= ti < self.tracks_list.count():
                 sb = self.tracks_list.verticalScrollBar()
                 scroll_before = sb.value()
@@ -1423,6 +1610,8 @@ class MainWindow(QMainWindow):
         if 0 <= cur < self.groups_list.count(): self.groups_list.setCurrentRow(cur)
         self.groups_list.setUpdatesEnabled(True)
         self.groups_list.blockSignals(False)
+        # 列表被重建，滑块坐标失效 → 直接落位到当前组，不做动画
+        self._set_group_pill(self.groups_list.currentRow(), animate=False)
         self._refresh_tracks_list()
 
     @Slot()
