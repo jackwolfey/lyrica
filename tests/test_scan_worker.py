@@ -38,6 +38,28 @@ def test_scan_worker_supports_each_extension(tmp_path, name):
     assert list(cache) == [str(path)]
 
 
+def test_scan_worker_emits_scanned_before_reading_tags(tmp_path):
+    """v1.1.4 渐进式：路径要在标签读完之前发出，UI 才能先建组。"""
+    a = tmp_path / "a.mp3"
+    b = tmp_path / "b.mp3"
+    a.write_bytes(b"")
+    b.write_bytes(b"")
+
+    order = []
+    worker = ScanWorker(str(tmp_path))
+    worker.scanned.connect(
+        lambda folder, paths: order.append(("scanned", folder, sorted(paths))))
+    worker.finished_ok.connect(
+        lambda folder, count, cache: order.append(("ok", folder, count)))
+
+    worker.run()
+
+    assert [item[0] for item in order] == ["scanned", "ok"]
+    _, folder, paths = order[0]
+    assert folder == os.path.abspath(str(tmp_path))
+    assert paths == sorted([str(a), str(b)])
+
+
 @pytest.mark.parametrize("name", ["a.m4a", "b.aac", "c.wma"])
 def test_scan_worker_skips_formats_backend_cannot_play(tmp_path, name):
     """m4a/aac/wma 不在 just_playback 的支持集合里，扫描阶段就应排除。"""

@@ -3,9 +3,11 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
+import tinytag
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -154,6 +156,7 @@ class SyncScanWorker:
         self.finished_ok = SignalStub()
         self.failed = SignalStub()
         self.progress = SignalStub()
+        self.scanned = SignalStub()
         self.finished = SignalStub()
         self.interrupted = False
 
@@ -170,6 +173,7 @@ class SyncScanWorker:
             for p in paths
         }
         self.progress.emit(len(paths), len(paths))
+        self.scanned.emit(self._folder, paths)
         self.finished_ok.emit(self._folder, len(paths), meta_cache)
 
     def deleteLater(self):
@@ -1079,14 +1083,14 @@ class ManualScanWorker(SyncScanWorker):
         pass
 
 
-class CancellingDialog(ImmediatelyAcceptedDialog):
-    """exec() 时模拟用户点击「取消」按钮。"""
+class RecordingDialog(ImmediatelyAcceptedDialog):
+    """捕获对话框实例：非阻塞流程下没有 exec()，测试直接操作实例。"""
 
-    def exec(self):
-        btn = self.findChild(mw.QPushButton)
-        if btn is not None:
-            btn.click()
-        return self.result()
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        RecordingDialog.instances.append(self)
 
 
 def test_add_folder_scans_then_adds_group(window, tmp_path, monkeypatch):
@@ -1101,6 +1105,39 @@ def test_add_folder_scans_then_adds_group(window, tmp_path, monkeypatch):
 
     assert window.player.get_group_count() == 1
     assert window.player.get_track_count() == 1
+
+
+def test_add_folder_shows_groups_before_tags_finish(window, tmp_path, monkeypatch):
+    """v1.1.4 渐进式加载：扫描一结束就建组，不等冷盘上的标签读取。"""
+    base = tmp_path / "music"
+    make_files(base / "Album", [f"a{i}.mp3" for i in range(4)])
+
+    real_get = tinytag.TinyTag.get
+
+    def slow_get(path, duration=True):
+        time.sleep(0.3)
+        return real_get(path, duration=duration)
+
+    monkeypatch.setattr(tinytag.TinyTag, "get", staticmethod(slow_get))
+    monkeypatch.setattr(mw.QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *args, **kwargs: str(base)))
+
+    app = QApplication.instance()
+    window._on_add_folder()
+
+    deadline = time.time() + 3.0
+    while window.player.get_group_count() == 0 and time.time() < deadline:
+        app.processEvents()
+
+    assert window.player.get_group_count() == 1
+    assert window.player.get_track_count() == 4
+    # 此刻标签仍在后台读取：最多只有当前曲目被按需读过一条
+    assert len(window.player._meta_cache) < 4
+
+    deadline = time.time() + 6.0
+    while len(window.player._meta_cache) < 4 and time.time() < deadline:
+        app.processEvents()
+    assert len(window.player._meta_cache) == 4
 
 
 def test_add_folder_scan_failure_shows_warning(window, tmp_path, monkeypatch):
@@ -1159,22 +1196,18 @@ def test_add_folder_progress_updates_dialog(window, tmp_path, monkeypatch):
         def start(self):
             self.progress.emit(1, 4)
 
-    class InspectingDialog(ImmediatelyAcceptedDialog):
-        def exec(self):
-            bar = self.findChild(mw.QProgressBar)
-            seen["value"] = bar.value() if bar is not None else None
-            seen["labels"] = [l.text() for l in self.findChildren(mw.QLabel)]
-            self.accept()
-            return self.result()
-
+    RecordingDialog.instances.clear()
     monkeypatch.setattr(mw.QFileDialog, "getExistingDirectory",
                         staticmethod(lambda *args, **kwargs: str(tmp_path)))
     monkeypatch.setattr(mw, "ScanWorker", ProgressOnlyWorker)
-    monkeypatch.setattr(mw, "QDialog", InspectingDialog)
+    monkeypatch.setattr(mw, "QDialog", RecordingDialog)
 
     window._on_add_folder()
 
-    assert seen["value"] == 25
+    # v1.1.4 起不再 exec() 阻塞，直接检查已创建的对话框实例
+    dlg = RecordingDialog.instances[0]
+    assert dlg.findChild(mw.QProgressBar).value() == 25
+    seen["labels"] = [lbl.text() for lbl in dlg.findChildren(mw.QLabel)]
     assert any("1 / 4" in text for text in seen["labels"])
 
 
@@ -1188,12 +1221,14 @@ def test_add_folder_cancel_interrupts_worker(window, tmp_path, monkeypatch):
         created.append(worker)
         return worker
 
+    RecordingDialog.instances.clear()
     monkeypatch.setattr(mw.QFileDialog, "getExistingDirectory",
                         staticmethod(lambda *args, **kwargs: str(base)))
     monkeypatch.setattr(mw, "ScanWorker", make_worker)
-    monkeypatch.setattr(mw, "QDialog", CancellingDialog)
+    monkeypatch.setattr(mw, "QDialog", RecordingDialog)
 
     window._on_add_folder()
+    RecordingDialog.instances[0].findChild(mw.QPushButton).click()
 
     assert len(created) == 1
     assert created[0].interrupted is True, "取消必须真正请求线程中断，而不是只忽略结果"
@@ -1210,14 +1245,17 @@ def test_add_folder_cancel_ignores_late_scan_result(window, tmp_path, monkeypatc
         created.append(worker)
         return worker
 
+    RecordingDialog.instances.clear()
     monkeypatch.setattr(mw.QFileDialog, "getExistingDirectory",
                         staticmethod(lambda *args, **kwargs: str(base)))
     monkeypatch.setattr(mw, "ScanWorker", make_worker)
-    monkeypatch.setattr(mw, "QDialog", CancellingDialog)
+    monkeypatch.setattr(mw, "QDialog", RecordingDialog)
 
     window._on_add_folder()
+    RecordingDialog.instances[0].findChild(mw.QPushButton).click()
 
     # 取消后线程可能仍晚到地 emit 完成 / 失败信号，两条路径都必须被忽略。
+    created[0].scanned.emit(str(base), [path])
     created[0].finished_ok.emit(str(base), 1, {
         path: {"title": None, "artist": None, "album": None, "duration": None},
     })

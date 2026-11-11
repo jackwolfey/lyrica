@@ -263,6 +263,7 @@ class ScanWorker(QThread):
     finished_ok = Signal(str, int, dict)  # folder_path, total_audio_count, meta_cache
     failed = Signal(str)
     progress = Signal(int, int)  # done, total
+    scanned = Signal(str, list)  # folder_path, 音频路径列表（标签尚未读取）
 
     def __init__(self, folder_path: str, existing_meta_cache: dict = None, parent=None):
         super().__init__(parent)
@@ -276,6 +277,10 @@ class ScanWorker(QThread):
 
             # Step 1: 一次遍历收集路径 + mtime（不读 metadata）
             scanned = _scan_audio_tree(self._folder)
+
+            # v1.1.4 渐进式加载：路径一确定就通知 UI 建组，标签留在后台继续读。
+            # 冷盘上标签读取可能耗时数十秒，用户不必等到全部读完才看到曲目。
+            self.scanned.emit(self._folder, list(scanned.keys()))
 
             # Step 2: 已缓存的直接复用，跳过 TinyTag；_mtime 从扫描结果补齐
             meta_cache: dict = {}
@@ -971,10 +976,30 @@ class MainWindow(QMainWindow):
         # v1.0.3: 传入已有 meta_cache → 跳过已缓存文件，避免重复 TinyTag 读
         worker = ScanWorker(folder, self.player._meta_cache, self)
         cancel_flag = {"cancelled": False}
+        added_now = {"count": 0}
+
+        # v1.1.4 渐进式加载：扫描结束就先建组，标签读取留在后台。
+        # 等待框延迟 250ms 才显示：热缓存下扫描只要几十毫秒，避免弹窗一闪而过；
+        # 真正耗时的冷盘/大目录才会看到进度与取消按钮。
+        reveal = QTimer(self)
+        reveal.setSingleShot(True)
+        reveal.timeout.connect(dlg.show)
+        reveal.start(250)
+        dlg.finished.connect(lambda _=0: reveal.stop())
 
         # QThread 结束（run() 返回）后再删除对象：取消时线程仍在退出过程中，
         # 直接 deleteLater() 有「Destroyed while thread is still running」风险。
         worker.finished.connect(worker.deleteLater)
+
+        def on_scanned(folder_path: str, paths: list):
+            if cancel_flag["cancelled"] or not paths:
+                return
+            # 只建组（key 即路径），元数据此时还没读，列表先用文件名占位
+            added_now["count"] = self.player.add_groups_from_scan({p: {} for p in paths})
+            if added_now["count"]:
+                dlg.accept()
+                self.statusBar().showMessage(
+                    f"已添加 {added_now['count']} 首，正在后台读取标签…", 5000)
 
         def on_progress(done: int, total: int):
             if total <= 0:
@@ -989,7 +1014,10 @@ class MainWindow(QMainWindow):
                 return
             # v1.0.2 优化2: 把 ScanWorker 预读的 metadata 填入 player 缓存
             self.player.preload_metadata(meta_cache)
-            # v1.1.3: 直接复用扫描结果建组，不再二次 os.walk / listdir / isfile
+            if added_now["count"]:
+                self.statusBar().showMessage("标签读取完成", 3000)
+                return
+            # 兜底：scanned 未触发（空目录/提前中断）时仍按旧路径建组
             added = self.player.add_groups_from_scan(meta_cache)
             dlg.accept()
             if added == 0:
@@ -1012,14 +1040,12 @@ class MainWindow(QMainWindow):
             dlg.reject()
 
         btn.clicked.connect(on_cancel)
+        worker.scanned.connect(on_scanned)
         worker.finished_ok.connect(on_ok)
         worker.failed.connect(on_err)
         worker.progress.connect(on_progress)
 
         worker.start()
-        dlg.exec()
-        # 如果对话框因其他原因（如窗口关闭）退出，也标记取消
-        cancel_flag["cancelled"] = cancel_flag["cancelled"] or dlg.result() != QDialog.Accepted
 
     @Slot()
     def _on_add_files(self):
