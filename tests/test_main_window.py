@@ -1282,3 +1282,101 @@ def test_load_invalid_play_mode_keeps_default(settings_file, window_factory):
     window = window_factory()
 
     assert window.player.get_play_mode() is PlayMode.SEQUENCE
+
+
+# ==================== 界面动效（v1.1.4） ====================
+
+
+def test_load_animations_flag(settings_file, window_factory):
+    write_json(settings_file, {"animations_enabled": False})
+
+    window = window_factory()
+
+    assert window._animations_enabled is False
+
+
+def test_set_animations_enabled_persists(settings_file, window):
+    window.set_animations_enabled(False)
+
+    data = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert data["animations_enabled"] is False
+
+
+def test_pulse_runs_only_while_playing(window):
+    from PySide6.QtCore import QAbstractAnimation
+
+    window._on_state_changed(True)
+    assert window._pulse_anim.state() == QAbstractAnimation.Running
+
+    window._on_state_changed(False)
+    assert window._pulse_anim.state() != QAbstractAnimation.Running
+    assert window._pulse == 1.0, "暂停后描边应回到固定亮度"
+
+
+def test_pulse_static_when_animations_disabled(window):
+    from PySide6.QtCore import QAbstractAnimation
+
+    window.set_animations_enabled(False)
+    window._on_state_changed(True)
+
+    assert window._pulse_anim.state() != QAbstractAnimation.Running
+    assert window._pulse == 1.0
+
+
+def test_hover_sets_row_and_clears(window, tmp_path):
+    paths = make_files(tmp_path / "album", [f"s{i}.mp3" for i in range(20)])
+    window.player.add_files(paths)
+    window._refresh_tracks_list()
+    window.set_animations_enabled(False)   # 关闭动效 → 悬停立即满亮度
+
+    window._on_track_hovered(window.tracks_list.item(3))
+    assert window._hover_row == 3
+    assert window._hover_alpha == 1.0
+
+    window._clear_track_hover()
+    assert window._hover_row == -1
+    assert window._hover_alpha == 0.0
+
+
+def test_smooth_scroll_jumps_when_animations_disabled(window, tmp_path):
+    paths = make_files(tmp_path / "album", [f"s{i}.mp3" for i in range(200)])
+    window.player.add_files(paths)
+    window.resize(800, 300)
+    window.show()
+    QApplication.instance().processEvents()
+    window.set_animations_enabled(False)
+
+    window._smooth_scroll_to(150)
+
+    assert window.tracks_list.verticalScrollBar().value() > 0
+
+
+def test_smooth_scroll_keeps_view_when_row_visible(window, tmp_path):
+    """目标行已完全可见时不得移动视口（避免播放时列表无谓跳动）。"""
+    paths = make_files(tmp_path / "album", [f"s{i}.mp3" for i in range(200)])
+    window.player.add_files(paths)
+    window.resize(800, 600)
+    window.show()
+    QApplication.instance().processEvents()
+    window.set_animations_enabled(False)
+
+    window._smooth_scroll_to(1)
+
+    assert window.tracks_list.verticalScrollBar().value() == 0
+
+
+def test_delegate_paints_pulse_and_hover(window, tmp_path):
+    """呼吸/悬停取值为 0 或 1 时离屏渲染不崩（绘制冒烟）。"""
+    from PySide6.QtGui import QPixmap
+
+    paths = make_files(tmp_path / "album", [f"s{i}.mp3" for i in range(5)])
+    window.player.add_files(paths)
+    window._refresh_tracks_list()
+    window._hover_row = 2
+    window._hover_alpha = 1.0
+    window._pulse = 0.0
+
+    pixmap = QPixmap(window.tracks_list.viewport().size())
+    window.tracks_list.viewport().render(pixmap)
+
+    assert not pixmap.isNull()
