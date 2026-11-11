@@ -668,6 +668,11 @@ class MainWindow(QMainWindow):
             self.player.track_changed.connect(vp.update)
             self.player.active_group_changed.connect(vp.update)
 
+        # v1.1.4: marquee 跨度只统计可视行，滚动后可视集合变化需要重算
+        self.tracks_list.verticalScrollBar().valueChanged.connect(
+            self._on_tracks_scrolled
+        )
+
         # v1.1: 全局快捷键（窗口焦点内生效）
         QShortcut(QKeySequence(Qt.Key_Space), self, activated=self.player.toggle_play_pause)
         QShortcut(QKeySequence(Qt.Key_Left),   self, activated=self._seek_backward)
@@ -1217,27 +1222,55 @@ class MainWindow(QMainWindow):
 
     def _update_marquee(self):
         """判定是否有超宽文本需要滚动，并维护共享偏移上限。
+        只扫描可视行：delegate 也只绘制可视行，全表扫描在 800+ 行时要十几毫秒。
         只在需要时启动唯一的 QTimer；没有超宽文本就彻底停掉，零常驻开销。"""
         if getattr(self, "tracks_list", None) is None:
             return
+        viewport = self.tracks_list.viewport()
         fm = self.tracks_list.fontMetrics()
-        avail = self.tracks_list.viewport().width()
+        avail = viewport.width()
+        count = self.tracks_list.count()
+        if count == 0:
+            self._marquee_span = 0
+            if self._marquee_timer.isActive():
+                self._marquee_timer.stop()
+                self._marquee_offset = 0
+                viewport.update()
+            return
+
+        first = self.tracks_list.indexAt(QPoint(0, 0))
+        last = self.tracks_list.indexAt(QPoint(0, viewport.height() - 1))
+        start = max(0, first.row() if first.isValid() else 0)
+        # 列表短于视口时底部 indexAt 返回无效索引，回退到最后一行，
+        # 否则会漏掉全部可见行，长文件名反而不滚动。
+        end = min(count - 1, last.row() if last.isValid() else count - 1)
+
         need = False
         span = 0
-        for i in range(self.tracks_list.count()):
+        for i in range(start, end + 1):
             w = fm.horizontalAdvance(self.tracks_list.item(i).text())
             if w > span:
                 span = w
             if w > avail - 16:
                 need = True
         self._marquee_span = span + 40 if span else 0
+        if self._marquee_offset > self._marquee_span:
+            # 可视区变窄后偏移可能越界，归位避免文字停在空档处
+            self._marquee_offset = 0
+
         if need and self.tracks_list.isVisible():
             if not self._marquee_timer.isActive():
                 self._marquee_timer.start()
-        else:
+        elif self._marquee_timer.isActive():
             self._marquee_timer.stop()
             self._marquee_offset = 0
-            self.tracks_list.viewport().update()
+            viewport.update()
+
+    @Slot(int)
+    def _on_tracks_scrolled(self, _value: int):
+        # 滚动改变可视行集合，marquee 跨度必须按新范围重算；
+        # 否则滚到长文件名区域时，滚动循环仍按旧跨度折返。
+        self._update_marquee()
 
     def _on_marquee_tick(self):
         self._marquee_offset += 1

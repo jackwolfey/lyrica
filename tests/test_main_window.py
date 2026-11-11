@@ -379,6 +379,81 @@ def test_overflow_row_hides_default_text_for_marquee(window, tmp_path):
     assert styled_text(rows["short.mp3"]) == "short.mp3"  # 正常行保持原文本
 
 
+def test_marquee_span_only_covers_visible_rows(window, tmp_path):
+    """v1.1.4: marquee 跨度只统计可视行，避免大播放组每次刷新全表测宽。
+
+    回归点：旧实现对 849 行全部 horizontalAdvance 要 15.7ms，占列表重建 59%；
+    而 delegate 只绘制可视行，非可视行的宽度对当前帧没有意义。
+    """
+    long_name = "A Very Long Track Title " * 8 + ".mp3"
+    names = [f"{i:02d}.mp3" for i in range(30)] + [long_name]
+    paths = make_files(tmp_path / "album", names)
+    window.player.add_files(paths)
+    window.resize(360, 300)
+    window.show()
+    QApplication.instance().processEvents()
+    window._refresh_tracks_list()
+    QApplication.instance().processEvents()
+
+    rows = {window.tracks_list.item(i).text(): i for i in range(window.tracks_list.count())}
+    last_visible = window.tracks_list.indexAt(
+        QPoint(0, window.tracks_list.viewport().height() - 1)
+    ).row()
+    assert rows[long_name] > last_visible, "超长行应位于视口之外"
+
+    long_w = window.tracks_list.fontMetrics().horizontalAdvance(long_name)
+    assert window._marquee_span < long_w + 40
+
+
+def test_marquee_recomputes_when_scrolling(window, tmp_path):
+    """滚到超长行区域后跨度必须增大，否则滚动循环会按旧跨度提前折返。"""
+    long_name = "A Very Long Track Title " * 8 + ".mp3"
+    names = [f"{i:02d}.mp3" for i in range(30)] + [long_name]
+    paths = make_files(tmp_path / "album", names)
+    window.player.add_files(paths)
+    window.resize(360, 300)
+    window.show()
+    QApplication.instance().processEvents()
+    window._refresh_tracks_list()
+    QApplication.instance().processEvents()
+
+    long_w = window.tracks_list.fontMetrics().horizontalAdvance(long_name)
+    assert window._marquee_span < long_w + 40
+
+    bar = window.tracks_list.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    QApplication.instance().processEvents()
+
+    assert window._marquee_span == long_w + 40
+    assert window._marquee_timer.isActive()
+
+
+def test_marquee_handles_list_shorter_than_viewport(window, tmp_path):
+    """行数少于视口时底部 indexAt 无效，必须回退到最后一行。
+
+    回归点：若按无效索引把 end 算成 start-1，会一行都不扫，长文件名不再滚动。
+    """
+    long_name = "A Very Long Track Title " * 8 + ".mp3"
+    names = [f"{long_name[:-4]} {suffix}.mp3" for suffix in ("b", "c", "d")]
+    paths = make_files(tmp_path / "album", names)
+    window.player.add_files(paths)
+    window.resize(360, 900)
+    window.show()
+    QApplication.instance().processEvents()
+    window._refresh_tracks_list()
+    QApplication.instance().processEvents()
+
+    assert window.tracks_list.count() == 3
+    last = window.tracks_list.indexAt(
+        QPoint(0, window.tracks_list.viewport().height() - 1)
+    )
+    assert not last.isValid(), "3 行不足以填满 900px 高的视口"
+
+    long_w = window.tracks_list.fontMetrics().horizontalAdvance(long_name)
+    assert window._marquee_span >= long_w + 40
+    assert window._marquee_timer.isActive()
+
+
 def test_refresh_tracks_list_skips_when_content_unchanged(window, tmp_path):
     """内容未变时不得重建列表（同组播放/重复点选不应重排列表）。"""
     paths = make_files(tmp_path / "album", [f"s{i}.mp3" for i in range(30)])

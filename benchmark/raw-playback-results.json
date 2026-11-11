@@ -1,0 +1,114 @@
+{
+  "switch_big": {
+    "handler_ms": 9.738045999711176,
+    "flush_ms": 8.294545999888214,
+    "total_ms": 18.03259199959939
+  },
+  "switch_small": {
+    "handler_ms": 3.117993000159913,
+    "flush_ms": 7.896575999893685,
+    "total_ms": 11.014569000053598
+  },
+  "switch_largest": {
+    "handler_ms": 20.97291399968526,
+    "flush_ms": 8.171874999788997,
+    "total_ms": 29.144788999474258
+  },
+  "rebuild_largest": {
+    "handler_ms": 17.778686999918136,
+    "flush_ms": 5.393843000092602,
+    "total_ms": 23.172530000010738
+  },
+  "marquee_scan_largest": {
+    "handler_ms": 15.844231999835756,
+    "flush_ms": 3.6845439999524388,
+    "total_ms": 19.528775999788195
+  },
+  "rebuild_300": {
+    "handler_ms": 9.950059999937366,
+    "flush_ms": 5.574473999786278,
+    "total_ms": 15.524533999723644
+  },
+  "marquee_scan_300": {
+    "handler_ms": 6.043204999969021,
+    "flush_ms": 4.526804999841261,
+    "total_ms": 10.570009999810281
+  },
+  "ui_track_change": {
+    "handler_ms": 0.5530840003302728,
+    "flush_ms": 9.720658999867737,
+    "total_ms": 10.27374300019801
+  },
+  "play_same_group": {
+    "handler_ms": 19.04154500016375,
+    "flush_ms": 7.472836000033567,
+    "total_ms": 26.514381000197318
+  },
+  "play_cross_group": {
+    "handler_ms": 22.217565999653743,
+    "flush_ms": 10.50530800011984,
+    "total_ms": 32.72287399977358
+  },
+  "next_track": {
+    "handler_ms": 31.33417000026384,
+    "flush_ms": 7.017332000032184,
+    "total_ms": 38.35150200029602
+  },
+  "decoder_load": {
+    "handler_ms": 10.241782999855786,
+    "flush_ms": 0.015778000033606077,
+    "total_ms": 10.257560999889392
+  },
+  "position_tick": {
+    "handler_ms": 0.005021000106353313,
+    "flush_ms": 0.0013180001587898005,
+    "total_ms": 0.006339000265143113
+  },
+  "marquee_active_narrow": true,
+  "marquee_span_px": 564,
+  "marquee_tick_paint": {
+    "handler_ms": 0.011432500059527229,
+    "flush_ms": 3.4798704998593166,
+    "total_ms": 3.491302999918844
+  },
+  "marquee_viewport_px": 408,
+  "restore_groups": {
+    "handler_ms": 98.34882400036804,
+    "flush_ms": 7.271559999935562,
+    "total_ms": 105.6203840003036
+  },
+  "burst_20": {
+    "total_ms": 711.4958570000454,
+    "per_action_ms": 35.57479285000227,
+    "rss_delta_mib": 0.00390625,
+    "timer_delta": 0
+  },
+  "audio_start_latency": {
+    "median_ms": 11.323980999804917,
+    "min_ms": 11.149447000207147,
+    "max_ms": 11.504949000027409
+  },
+  "_env": {
+    "tracks": 10000,
+    "groups": 58,
+    "big_group": 306,
+    "largest_group": 849,
+    "small_group": 87,
+    "rss_start_mib": 104.109375,
+    "timers_start": 5,
+    "reps": 5
+  },
+  "attribution": {
+    "rows": 849,
+    "refresh_full": 26.40974699988874,
+    "refresh_no_marquee": 9.596493000117334,
+    "marquee_scan_all": 15.67828199995347,
+    "marquee_scan_visible": 0.4086170001755818,
+    "visible_rows": 23,
+    "viewport_repaint": 3.563754999959201,
+    "get_playlist_copy": 0.0293150001198228,
+    "get_track_metadata_cached": 0.0031640001907362603,
+    "set_3_labels": 0.08063300037974841,
+    "add_items_only": 11.752247999993415
+  }
+}
