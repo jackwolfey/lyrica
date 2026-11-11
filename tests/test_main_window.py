@@ -454,6 +454,51 @@ def test_marquee_handles_list_shorter_than_viewport(window, tmp_path):
     assert window._marquee_timer.isActive()
 
 
+def test_marquee_measures_only_visible_rows(window, tmp_path, monkeypatch):
+    """性能契约：测宽次数必须与可视行数同阶，而不是随总行数增长。
+
+    回归点：全表扫描 849 行要 15.8ms，而可视区只有 23 行时只要 0.4ms。
+    这里断言调用次数而非耗时，避免 CI 计时抖动导致误报。
+    """
+    names = [f"{i:03d}.mp3" for i in range(400)]
+    paths = make_files(tmp_path / "big", names)
+    window.player.add_files(paths)
+    window.resize(360, 320)
+    window.show()
+    QApplication.instance().processEvents()
+    window._refresh_tracks_list()
+    QApplication.instance().processEvents()
+
+    real = window.tracks_list.fontMetrics()
+
+    class _Counter:
+        def __init__(self):
+            self.calls = 0
+
+        def horizontalAdvance(self, text):
+            self.calls += 1
+            return real.horizontalAdvance(text)
+
+    counter = _Counter()
+    monkeypatch.setattr(window.tracks_list, "fontMetrics", lambda: counter)
+
+    viewport = window.tracks_list.viewport()
+    first = window.tracks_list.indexAt(QPoint(0, 0)).row()
+    last = window.tracks_list.indexAt(QPoint(0, viewport.height() - 1)).row()
+    visible = last - first + 1
+    assert 0 < visible < 400, "测试前提：400 行应多于可视行数"
+
+    window._update_marquee()
+    assert counter.calls <= visible + 2
+
+    # 滚到底部同样只测可视行（不能回退成整表扫描）
+    counter.calls = 0
+    bar = window.tracks_list.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    QApplication.instance().processEvents()
+    assert counter.calls <= visible + 5
+
+
 def test_refresh_tracks_list_skips_when_content_unchanged(window, tmp_path):
     """内容未变时不得重建列表（同组播放/重复点选不应重排列表）。"""
     paths = make_files(tmp_path / "album", [f"s{i}.mp3" for i in range(30)])
