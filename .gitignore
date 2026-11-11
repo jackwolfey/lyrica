@@ -24,3 +24,4 @@ lyrica_settings.json.tmp
 
 # 会话上传目录（截图等临时文件，不入库）
 .uploads/
+.screenshots/
